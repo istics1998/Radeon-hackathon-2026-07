@@ -23,6 +23,7 @@ C.set_headless_render_defaults()
 import jax  # noqa: E402
 from brax.training.agents.ppo import train as ppo  # noqa: E402
 from mujoco_playground import registry  # noqa: E402
+from mujoco_playground import wrapper as pg_wrapper  # noqa: E402
 from mujoco_playground.config import locomotion_params  # noqa: E402
 
 
@@ -48,12 +49,22 @@ def main() -> None:
     args = parse_args()
     C.ensure_dirs()
     C.assert_gpu(require=not args.allow_cpu)
+    C.apply_jax_compat_shims()
 
     env_name = args.env
     print(f"[train] env={env_name} seed={args.seed}")
 
     # Environment + tuned PPO config straight from Playground.
-    env = registry.load(env_name)
+    # Force the classic JAX/XLA MJX backend (impl="jax"). mujoco-mjx >=3.10
+    # defaults to the Warp backend, which is not available on the ROCm JAX
+    # build here (mjx.put_model then raises "type object 'int' has no
+    # attribute 'WARP'"). The JAX backend is the one verified in
+    # scripts/00_verify_rocm.sh and runs on the AMD GPU via ROCm.
+    env_cfg = registry.get_default_config(env_name)
+    if "impl" in env_cfg:
+        with env_cfg.unlocked():
+            env_cfg.impl = "jax"
+    env = registry.load(env_name, config=env_cfg)
     ppo_params = locomotion_params.brax_ppo_config(env_name)
     if args.num_timesteps is not None:
         ppo_params.num_timesteps = args.num_timesteps
@@ -95,6 +106,7 @@ def main() -> None:
         **ppo_kwargs,
         network_factory=network_factory,
         randomization_fn=randomizer,
+        wrap_env_fn=pg_wrapper.wrap_for_brax_training,
         progress_fn=progress,
         seed=args.seed,
     )

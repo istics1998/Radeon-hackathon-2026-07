@@ -38,13 +38,25 @@ scripts/01_train.sh         # train (SMOKE=1 for a quick pipeline check)
 scripts/02_eval.sh          # closed-loop evaluation + metrics
 scripts/03_record_video.sh  # render rollout to mp4 for the demo video
 src/config.py               # paths + GPU assertion + headless render defaults
-src/train.py                # Brax PPO on a Playground locomotion env
+src/nets.py                 # self-contained actor-critic + tanh-Gaussian policy
+src/train_jax_ppo.py        # from-scratch single-GPU jit PPO (default trainer)
+src/train.py                # original brax-PPO path (kept for comparison; see note)
 src/eval.py                 # load checkpoint, closed-loop rollout, metrics
 src/render.py               # rollout -> mp4 (headless osmesa)
 configs/go1_joystick.yaml   # default task settings
 Dockerfile                  # ROCm JAX base image, reproducible build
 report/                     # technical report template
 ```
+
+> **Why a from-scratch PPO?** brax's stock PPO trainer segfaults inside
+> `libhsa-runtime64` on our gfx1100 + ROCm stack — its `pmap`-over-`scan`
+> training step hits a ROCm runtime bug (MJX physics itself is fine).
+> `src/train_jax_ppo.py` reimplements PPO using **only `jax.jit` on a single
+> device** — no `pmap`, no cross-device collectives — which is exactly the code
+> path proven to run on the GPU. This both unblocks training and fits the
+> track's *lightweight, low-latency, single-GPU* theme. See `docs/HANDOFF.md`
+> for the full root-cause analysis and the reproducer
+> (`scripts/repro_hsa_segfault.py`).
 
 ---
 

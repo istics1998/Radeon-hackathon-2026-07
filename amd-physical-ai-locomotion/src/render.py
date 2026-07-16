@@ -15,9 +15,8 @@ C.set_headless_render_defaults()
 
 import jax  # noqa: E402
 import mediapy as media  # noqa: E402
-from mujoco_playground import registry  # noqa: E402
 
-from src.eval import load_inference_fn  # noqa: E402
+from src.eval import load_env, load_inference_fn  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,9 +36,9 @@ def main() -> None:
     C.assert_gpu(require=not args.allow_cpu)
 
     env_name = args.env
-    env = registry.load(env_name)
+    env = load_env(env_name)
     ckpt_path = args.ckpt or (C.CKPT_DIR / f"{env_name}_seed{args.seed}.pkl")
-    policy_fn = load_inference_fn(env, env_name, ckpt_path)
+    policy_fn = load_inference_fn(env, ckpt_path)
 
     jit_reset = jax.jit(env.reset)
     jit_step = jax.jit(env.step)
@@ -50,7 +49,7 @@ def main() -> None:
     rollout = [state]
     for _ in range(args.steps):
         rng, akey = jax.random.split(rng)
-        action, _ = jit_policy(state.obs, akey)
+        action = jit_policy(state.obs, akey)
         state = jit_step(state, action)
         rollout.append(state)
         if bool(state.done):

@@ -19,9 +19,9 @@ C.set_headless_render_defaults()
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
-from brax.training.agents.ppo import networks as ppo_networks  # noqa: E402
 from mujoco_playground import registry  # noqa: E402
-from mujoco_playground.config import locomotion_params  # noqa: E402
+
+from src import nets as N  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,21 +34,38 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_inference_fn(env, env_name, ckpt_path):
-    """Rebuild the PPO network with the same factory used in training and load params."""
-    ppo_params = locomotion_params.brax_ppo_config(env_name)
-    nf = dict(ppo_params.get("network_factory", {}))
-    with open(ckpt_path, "rb") as f:
-        params = pickle.load(f)
+def load_env(env_name):
+    """Load an env forcing the JAX/XLA MJX backend (Warp is unavailable on ROCm)."""
+    cfg = registry.get_default_config(env_name)
+    if "impl" in cfg:
+        with cfg.unlocked():
+            cfg.impl = "jax"
+    return registry.load(env_name, config=cfg)
 
-    obs_size = env.observation_size
-    act_size = env.action_size
-    networks = ppo_networks.make_ppo_networks(
-        observation_size=obs_size, action_size=act_size, **nf
+
+def load_inference_fn(env, ckpt_path):
+    """Rebuild the actor-critic (src/nets) and load the saved checkpoint.
+
+    The checkpoint is ``{params, norms, meta}`` as written by
+    src/train_jax_ppo.py. Returns ``policy(obs, key) -> action`` (deterministic).
+    """
+    with open(ckpt_path, "rb") as f:
+        ckpt = pickle.load(f)
+    params = ckpt["params"]
+    norms = ckpt["norms"]
+    meta = ckpt.get("meta", {})
+
+    model = N.ActorCritic(
+        action_size=env.action_size,
+        policy_hidden=tuple(meta.get("policy_hidden", (512, 256, 128))),
+        value_hidden=tuple(meta.get("value_hidden", (512, 256, 128))),
     )
-    make_policy = ppo_networks.make_inference_fn(networks)
-    # deterministic=True for evaluation.
-    return make_policy(params, deterministic=True)
+    policy = N.make_inference_fn(model)
+
+    def infer(obs, key):
+        return policy(params, norms, obs, key, deterministic=True)
+
+    return infer
 
 
 def main() -> None:
@@ -57,11 +74,11 @@ def main() -> None:
     C.assert_gpu(require=not args.allow_cpu)
 
     env_name = args.env
-    env = registry.load(env_name)
+    env = load_env(env_name)
     ckpt_path = args.ckpt or (C.CKPT_DIR / f"{env_name}_seed{args.seed}.pkl")
     print(f"[eval] env={env_name} ckpt={ckpt_path}")
 
-    policy_fn = load_inference_fn(env, env_name, ckpt_path)
+    policy_fn = load_inference_fn(env, ckpt_path)
 
     jit_reset = jax.jit(env.reset)
     jit_step = jax.jit(env.step)
@@ -76,7 +93,7 @@ def main() -> None:
         total_r, steps = 0.0, 0
         while True:
             rng, akey = jax.random.split(rng)
-            action, _ = jit_policy(state.obs, akey)
+            action = jit_policy(state.obs, akey)
             state = jit_step(state, action)
             total_r += float(state.reward)
             steps += 1

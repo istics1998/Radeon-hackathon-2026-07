@@ -45,6 +45,43 @@ def set_headless_render_defaults() -> None:
     os.environ.setdefault("XLA_FLAGS", "--xla_gpu_enable_command_buffer=")
 
 
+def apply_jax_compat_shims() -> None:
+    """Restore APIs brax still calls but recent JAX removed.
+
+    The ROCm build pins us to a new JAX (0.10.x) that dropped
+    ``jax.device_put_replicated`` / ``jax.device_put_sharded`` (the pmap
+    migration). brax 0.14.x still calls them internally. We re-add drop-in
+    equivalents built on the current ``jax.device_put`` so brax's PPO trainer
+    runs unmodified. Semantics match the originals: a leading axis of size
+    ``len(devices)`` is added (replicated = same value per device; sharded =
+    one shard per device). Correct for the single-GPU case here (leading
+    axis 1), and a faithful stand-in generally.
+    """
+    import jax
+    from jax import tree_util
+
+    if not hasattr(jax, "device_put_replicated"):
+        def _device_put_replicated(x, devices):
+            n = len(devices)
+            import jax.numpy as jnp
+
+            stacked = tree_util.tree_map(
+                lambda leaf: jnp.stack([jnp.asarray(leaf)] * n), x
+            )
+            return jax.device_put(stacked, devices[0])
+
+        jax.device_put_replicated = _device_put_replicated
+
+    if not hasattr(jax, "device_put_sharded"):
+        def _device_put_sharded(shards, devices):
+            import jax.numpy as jnp
+
+            stacked = tree_util.tree_map(lambda *ls: jnp.stack(ls), *shards)
+            return jax.device_put(stacked, devices[0])
+
+        jax.device_put_sharded = _device_put_sharded
+
+
 def assert_gpu(require: bool = True) -> str:
     """Verify JAX is running on the AMD GPU. Returns a human-readable device str.
 
