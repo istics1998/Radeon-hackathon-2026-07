@@ -237,7 +237,36 @@ def _make_update_fn(env, model, optimizer, args):
         metrics["rollout_reward"] = jnp.mean(data["reward"])
         return params, opt_state, norms, state, key, metrics
 
-    return jax.jit(update)
+    return update
+
+
+def _make_train_fn(env, model, optimizer, args, num_iters):
+    """Fold the whole training loop into ONE jax.lax.scan, dispatched once.
+
+    Why not a Python for-loop calling a jitted update per iter: on this
+    gfx1100 + jax-rocm7 stack, RE-dispatching an already-compiled executable
+    segfaults inside xla_rocm_plugin's PJRT execute path (iter 0 succeeds, iter
+    1 crashes; see docs/HANDOFF.md). A single scan compiles to one executable
+    that runs all iters in a single dispatch — the code path proven to work.
+    Per-iter metrics are stacked as the scan's ys and returned for host-side
+    logging after the single call completes.
+    """
+    update = _make_update_fn(env, model, optimizer, args)
+
+    def train(params, opt_state, norms, state, key):
+        def scan_step(carry, _):
+            params, opt_state, norms, state, key = carry
+            params, opt_state, norms, state, key, metrics = update(
+                params, opt_state, norms, state, key
+            )
+            return (params, opt_state, norms, state, key), metrics
+
+        (params, opt_state, norms, state, key), metrics = jax.lax.scan(
+            scan_step, (params, opt_state, norms, state, key), None, length=num_iters
+        )
+        return params, opt_state, norms, state, key, metrics
+
+    return jax.jit(train)
 
 
 def _save_checkpoint(path, payload) -> None:
@@ -316,32 +345,36 @@ def main() -> None:
     )
     opt_state = optimizer.init(params)
 
-    update_fn = _make_update_fn(env, model, optimizer, args)
-
     steps_per_iter = args.num_envs * args.unroll_length
     num_iters = max(1, args.num_timesteps // steps_per_iter)
+    # scan length must be static, so build the train fn with the concrete count.
+    train_fn = _make_train_fn(env, model, optimizer, args, num_iters)
     print(f"[train_jax_ppo] {steps_per_iter:,} steps/iter x {num_iters} iters "
           f"(~{steps_per_iter * num_iters:,} env steps)")
-    print("[train_jax_ppo] compiling & training (first iter includes JIT compile)...")
+    print("[train_jax_ppo] compiling & training (single dispatch — one scan over all iters)...")
 
-    metrics_log: list[dict] = []
     t0 = time.time()
-    total_steps = 0
+    # ONE dispatch: the whole loop runs inside a single compiled scan. This
+    # avoids the re-dispatch segfault on this ROCm stack (see _make_train_fn).
+    params, opt_state, norms, state, key, stacked = train_fn(
+        params, opt_state, norms, state, key
+    )
+    # stacked[k] has shape (num_iters,). Materialize once, then log per iter.
+    stacked = jax.tree_util.tree_map(lambda x: x.tolist(), stacked)
+    wall = time.time() - t0
+    metrics_log: list[dict] = []
     for it in range(num_iters):
-        params, opt_state, norms, state, key, metrics = update_fn(
-            params, opt_state, norms, state, key
-        )
-        total_steps += steps_per_iter
-        row = {"iter": it, "steps": total_steps, "wall_s": round(time.time() - t0, 1)}
-        for k, v in metrics.items():
-            row[k] = float(v)
+        total_steps = steps_per_iter * (it + 1)
+        row = {"iter": it, "steps": total_steps}
+        for k, v in stacked.items():
+            row[k] = float(v[it])
         metrics_log.append(row)
         if it % 10 == 0 or it == num_iters - 1:
-            sps = total_steps / max(1e-9, time.time() - t0)
             print(f"[train_jax_ppo] iter={it:>5} steps={total_steps:>12,} "
                   f"reward={row.get('rollout_reward', float('nan')):8.4f} "
-                  f"loss={row.get('loss', float('nan')):8.4f} "
-                  f"{sps:,.0f} steps/s")
+                  f"loss={row.get('loss', float('nan')):8.4f}")
+    sps = (steps_per_iter * num_iters) / max(1e-9, wall)
+    print(f"[train_jax_ppo] {sps:,.0f} steps/s overall")
 
     ckpt_path = C.CKPT_DIR / f"{env_name}_seed{args.seed}.pkl"
     _save_checkpoint(ckpt_path, {
