@@ -54,6 +54,15 @@ def parse_args() -> argparse.Namespace:
                    help="Parallel MJX envs (vmap). Lower if VRAM-bound.")
     p.add_argument("--unroll-length", type=int, default=20,
                    help="Steps collected per env per PPO iteration.")
+    p.add_argument("--iters-per-chunk", type=int, default=4,
+                   help="PPO iters folded into ONE scan dispatch. Each chunk is "
+                        "one compiled dispatch; a checkpoint is saved after every "
+                        "chunk so training resumes across the ROCm HSA segfault. "
+                        "Keep small enough that one dispatch stays in the stable "
+                        "region for the chosen --num-envs (see docs/HANDOFF.md).")
+    p.add_argument("--resume", action="store_true",
+                   help="Resume from the latest checkpoint for this env/seed if "
+                        "present, continuing the step count and metrics log.")
     p.add_argument("--num-minibatches", type=int, default=32)
     p.add_argument("--num-epochs", type=int, default=4,
                    help="PPO update epochs per batch of rollout data.")
@@ -240,16 +249,22 @@ def _make_update_fn(env, model, optimizer, args):
     return update
 
 
-def _make_train_fn(env, model, optimizer, args, num_iters):
-    """Fold the whole training loop into ONE jax.lax.scan, dispatched once.
+def _make_train_fn(env, model, optimizer, args, iters_per_chunk):
+    """Fold ONE CHUNK of training iters into a single jax.lax.scan dispatch.
 
-    Why not a Python for-loop calling a jitted update per iter: on this
-    gfx1100 + jax-rocm7 stack, RE-dispatching an already-compiled executable
-    segfaults inside xla_rocm_plugin's PJRT execute path (iter 0 succeeds, iter
-    1 crashes; see docs/HANDOFF.md). A single scan compiles to one executable
-    that runs all iters in a single dispatch — the code path proven to work.
-    Per-iter metrics are stacked as the scan's ys and returned for host-side
-    logging after the single call completes.
+    On this gfx1100 + jax-rocm7 stack, kernel launches are intercepted by a
+    rocprofiler-sdk statically linked into xla_rocm_plugin, and forwarding into
+    HSA hits a nondeterministic segfault whose probability grows with both the
+    size of a single dispatch (total while-loop iterations) AND the number of
+    dispatches (see docs/HANDOFF.md). Neither a giant single scan (crashes at
+    1024+ envs) nor a long Python re-dispatch loop is safe on its own.
+
+    The chunk is the compromise: fold ``iters_per_chunk`` iters into one scan so
+    a chunk is a single dispatch of bounded size, and drive chunks from a Python
+    loop in main() that saves a full checkpoint after each. If a chunk segfaults,
+    the outer shell restarts and --resume continues from the last checkpoint, so
+    total training progress accumulates across crashes. Per-iter metrics are
+    stacked as the scan's ys and returned for host-side logging.
     """
     update = _make_update_fn(env, model, optimizer, args)
 
@@ -262,7 +277,8 @@ def _make_train_fn(env, model, optimizer, args, num_iters):
             return (params, opt_state, norms, state, key), metrics
 
         (params, opt_state, norms, state, key), metrics = jax.lax.scan(
-            scan_step, (params, opt_state, norms, state, key), None, length=num_iters
+            scan_step, (params, opt_state, norms, state, key), None,
+            length=iters_per_chunk,
         )
         return params, opt_state, norms, state, key, metrics
 
@@ -270,8 +286,17 @@ def _make_train_fn(env, model, optimizer, args, num_iters):
 
 
 def _save_checkpoint(path, payload) -> None:
-    with open(path, "wb") as f:
+    # Write to a temp file then atomically rename, so a segfault mid-write can
+    # never corrupt the checkpoint we resume from.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
         pickle.dump(payload, f)
+    tmp.replace(path)
+
+
+def _load_checkpoint(path):
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
 
 def main() -> None:
@@ -347,52 +372,82 @@ def main() -> None:
 
     steps_per_iter = args.num_envs * args.unroll_length
     num_iters = max(1, args.num_timesteps // steps_per_iter)
-    # scan length must be static, so build the train fn with the concrete count.
-    train_fn = _make_train_fn(env, model, optimizer, args, num_iters)
-    print(f"[train_jax_ppo] {steps_per_iter:,} steps/iter x {num_iters} iters "
-          f"(~{steps_per_iter * num_iters:,} env steps)")
-    print("[train_jax_ppo] compiling & training (single dispatch — one scan over all iters)...")
-
-    t0 = time.time()
-    # ONE dispatch: the whole loop runs inside a single compiled scan. This
-    # avoids the re-dispatch segfault on this ROCm stack (see _make_train_fn).
-    params, opt_state, norms, state, key, stacked = train_fn(
-        params, opt_state, norms, state, key
-    )
-    # stacked[k] has shape (num_iters,). Materialize once, then log per iter.
-    stacked = jax.tree_util.tree_map(lambda x: x.tolist(), stacked)
-    wall = time.time() - t0
-    metrics_log: list[dict] = []
-    for it in range(num_iters):
-        total_steps = steps_per_iter * (it + 1)
-        row = {"iter": it, "steps": total_steps}
-        for k, v in stacked.items():
-            row[k] = float(v[it])
-        metrics_log.append(row)
-        if it % 10 == 0 or it == num_iters - 1:
-            print(f"[train_jax_ppo] iter={it:>5} steps={total_steps:>12,} "
-                  f"reward={row.get('rollout_reward', float('nan')):8.4f} "
-                  f"loss={row.get('loss', float('nan')):8.4f}")
-    sps = (steps_per_iter * num_iters) / max(1e-9, wall)
-    print(f"[train_jax_ppo] {sps:,.0f} steps/s overall")
+    iters_per_chunk = min(args.iters_per_chunk, num_iters)
+    num_chunks = (num_iters + iters_per_chunk - 1) // iters_per_chunk
+    # scan length must be static, so build the chunk fn with the concrete count.
+    train_fn = _make_train_fn(env, model, optimizer, args, iters_per_chunk)
 
     ckpt_path = C.CKPT_DIR / f"{env_name}_seed{args.seed}.pkl"
-    _save_checkpoint(ckpt_path, {
-        "params": params,
-        "norms": norms,
-        "meta": {
-            "env": env_name,
-            "action_size": int(env.action_size),
-            "policy_hidden": list(args.policy_hidden),
-            "value_hidden": list(args.value_hidden),
-        },
-    })
-    (C.LOG_DIR / f"{env_name}_seed{args.seed}_metrics.json").write_text(
-        json.dumps(metrics_log, indent=2)
-    )
-    print(f"[train_jax_ppo] done in {time.time() - t0:.1f}s")
+    metrics_path = C.LOG_DIR / f"{env_name}_seed{args.seed}_metrics.json"
+
+    def _ckpt_payload(params, norms, opt_state, iters_done):
+        # opt_state + iters_done let --resume continue training exactly; params +
+        # norms + meta are what eval/render load (extra keys are ignored there).
+        return {
+            "params": params,
+            "norms": norms,
+            "opt_state": opt_state,
+            "iters_done": iters_done,
+            "meta": {
+                "env": env_name,
+                "action_size": int(env.action_size),
+                "policy_hidden": list(args.policy_hidden),
+                "value_hidden": list(args.value_hidden),
+            },
+        }
+
+    iters_done = 0
+    metrics_log: list[dict] = []
+    if args.resume and ckpt_path.exists():
+        ck = _load_checkpoint(ckpt_path)
+        params = ck["params"]
+        norms = ck["norms"]
+        if ck.get("opt_state") is not None:
+            opt_state = ck["opt_state"]
+        iters_done = int(ck.get("iters_done", 0))
+        if metrics_path.exists():
+            metrics_log = json.loads(metrics_path.read_text())
+        print(f"[train_jax_ppo] resumed from {ckpt_path} at iter {iters_done}")
+
+    print(f"[train_jax_ppo] {steps_per_iter:,} steps/iter x {num_iters} iters "
+          f"= {num_chunks} chunks of {iters_per_chunk} "
+          f"(~{steps_per_iter * num_iters:,} env steps)")
+    print("[train_jax_ppo] training: one scan dispatch per chunk, checkpoint after each")
+
+    t0 = time.time()
+    chunk_start = iters_done // iters_per_chunk
+    for chunk in range(chunk_start, num_chunks):
+        tc = time.time()
+        # ONE dispatch for this chunk (a scan of iters_per_chunk iters). Bounded
+        # size keeps it in the stable region; the outer loop re-dispatches a
+        # fresh chunk each time, and --resume recovers if one segfaults.
+        params, opt_state, norms, state, key, stacked = train_fn(
+            params, opt_state, norms, state, key
+        )
+        stacked = jax.tree_util.tree_map(lambda x: x.tolist(), stacked)
+        for j in range(iters_per_chunk):
+            it = chunk * iters_per_chunk + j
+            if it >= num_iters:
+                break
+            total_steps = steps_per_iter * (it + 1)
+            row = {"iter": it, "steps": total_steps}
+            for k, v in stacked.items():
+                row[k] = float(v[j])
+            metrics_log.append(row)
+        iters_done = min((chunk + 1) * iters_per_chunk, num_iters)
+        # Persist after every chunk so a later segfault costs at most one chunk.
+        _save_checkpoint(ckpt_path, _ckpt_payload(params, norms, opt_state, iters_done))
+        metrics_path.write_text(json.dumps(metrics_log, indent=2))
+        last = metrics_log[-1]
+        sps = (iters_per_chunk * steps_per_iter) / max(1e-9, time.time() - tc)
+        print(f"[train_jax_ppo] chunk {chunk + 1}/{num_chunks} "
+              f"iter={last['iter']:>5} steps={last['steps']:>12,} "
+              f"reward={last.get('rollout_reward', float('nan')):8.4f} "
+              f"loss={last.get('loss', float('nan')):8.4f} {sps:,.0f} steps/s")
+
+    print(f"[train_jax_ppo] done in {time.time() - t0:.1f}s ({iters_done}/{num_iters} iters)")
     print(f"[train_jax_ppo] checkpoint -> {ckpt_path}")
-    print(f"[train_jax_ppo] metrics    -> {C.LOG_DIR}")
+    print(f"[train_jax_ppo] metrics    -> {metrics_path}")
 
 
 if __name__ == "__main__":
