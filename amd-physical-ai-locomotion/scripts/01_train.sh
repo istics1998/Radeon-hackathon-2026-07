@@ -16,10 +16,11 @@ ENV="${ENV:-Go1JoystickFlatTerrain}"
 SEED="${SEED:-0}"
 TRAINER="${TRAINER:-jax}"   # jax = our single-GPU PPO; brax = original brax runner
 
-# Stable region for the jax trainer on this gfx1100/ROCm stack: the rocprofiler
-# HSA segfault probability rises with dispatch size and count, so cap env count
-# and fold a bounded number of iters into each single-dispatch chunk. 512 envs
-# with 4-iter chunks is proven stable (docs/HANDOFF.md). Override via env vars.
+# NOTE (2026-07-17): the rocprofiler HSA segfault is a NON-DETERMINISTIC race,
+# not a size threshold — no NUM_ENVS/ITERS_PER_CHUNK is "proven stable". 512/4
+# and even 256/1 crashed before the first checkpoint (docs/HANDOFF.md §9.4).
+# These defaults are only a starting point; the real fix is a profiler-free
+# xla_rocm plugin (§9.7 path A), NOT tuning these numbers.
 NUM_ENVS="${NUM_ENVS:-512}"
 ITERS_PER_CHUNK="${ITERS_PER_CHUNK:-4}"
 NUM_TIMESTEPS="${NUM_TIMESTEPS:-50000000}"
