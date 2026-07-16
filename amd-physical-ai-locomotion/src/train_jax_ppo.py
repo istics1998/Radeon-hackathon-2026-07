@@ -26,6 +26,7 @@ with SMOKE first; iterate there. See docs/HANDOFF.md.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import pickle
 import time
@@ -259,17 +260,32 @@ def main() -> None:
             env_cfg.impl = "jax"
     env = registry.load(env_name, config=env_cfg)
     episode_length = env._config.episode_length
+
+    key = jax.random.PRNGKey(args.seed)
+    key, init_key, reset_key, randomize_key = jax.random.split(key, 4)
+
+    # Playground's domain randomizer has signature (model, rng); the training
+    # wrapper only calls it as randomization_fn(model). Bind a per-env batch of
+    # rng keys via partial first — this mirrors what brax's train.py does before
+    # handing the fn to the wrapper. get_domain_randomizer may return None for
+    # envs without randomization; pass it through unchanged in that case.
+    domain_randomizer = registry.get_domain_randomizer(env_name)
+    if domain_randomizer is not None:
+        randomization_fn = functools.partial(
+            domain_randomizer,
+            rng=jax.random.split(randomize_key, args.num_envs),
+        )
+    else:
+        randomization_fn = None
+
     # Brax-style training wrappers (episode reset / auto-reset / obs) — the
     # Playground helper, same one used by the brax path. Pure vmap, no pmap.
     env = pg_wrapper.wrap_for_brax_training(
         env,
         episode_length=episode_length,
         action_repeat=1,
-        randomization_fn=registry.get_domain_randomizer(env_name),
+        randomization_fn=randomization_fn,
     )
-
-    key = jax.random.PRNGKey(args.seed)
-    key, init_key, reset_key = jax.random.split(key, 3)
 
     model = N.ActorCritic(
         action_size=env.action_size,
