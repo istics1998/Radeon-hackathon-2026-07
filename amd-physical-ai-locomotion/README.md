@@ -264,6 +264,7 @@ C.set_headless_render_defaults()
 import jax
 from mujoco_playground import registry as reg
 import mujoco
+import mujoco.mjx as mjx  # 需要这个转换 MJX Data -> MjData
 import mediapy as media
 import numpy as np
 
@@ -278,7 +279,9 @@ for i in range(100):
     a = jax.random.uniform(jax.random.fold_in(key, i), (12,), minval=-1, maxval=1)
     state = env.step(state, a)
     r = mujoco.Renderer(env.mj_model, height=480, width=640)
-    r.update_scene(state.data)
+    # 转换 MJX Data -> 标准 MjData
+    mj_data = mjx.make_mjdata(env.mj_model, state.data)
+    r.update_scene(mj_data)
     frames.append(r.render())
     r.close()
 
