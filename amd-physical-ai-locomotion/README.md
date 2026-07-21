@@ -264,7 +264,7 @@ C.set_headless_render_defaults()
 import jax
 from mujoco_playground import registry as reg
 import mujoco
-import mujoco.mjx as mjx  # make_data() 转换 MJX Data -> MjData
+import mujoco.mjx as mjx
 import mediapy as media
 import numpy as np
 
@@ -275,16 +275,15 @@ env = reg.load('Go1JoystickFlatTerrain', config=cfg)
 key = jax.random.PRNGKey(0)
 state = env.reset(key)
 
-# Renderer 只创建一次!
 r = mujoco.Renderer(env.mj_model, height=480, width=640)
 frames = []
 for i in range(100):
     a = jax.random.uniform(jax.random.fold_in(key, i), (12,), minval=-1, maxval=1)
     state = env.step(state, a)
-    mj_data = mjx.make_data(env.mj_model, state.data)  # make_data() 不是 make_mjdata()
+    mj_data = mjx.make_data(env.mj_model, state.data, impl='numpy')
     r.update_scene(mj_data)
     frames.append(r.render())
-r.close()
+del r
 
 media.write_video('outputs/demo.mp4', np.stack(frames), fps=30)
 print('✅ outputs/demo.mp4')
