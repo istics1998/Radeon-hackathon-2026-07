@@ -253,40 +253,42 @@ JAX-based GPU training on affected configurations.
 
 ### How to regenerate / 如何重新生成
 
+> ⚠️ MuJoCo Renderer(OSMesa/EGL/glfw)在 Python 3.12 + MuJoCo 3.10 上不可用，改用 matplotlib 3D 渲染。
+
 ```bash
 cd /workspace/Radeon-hackathon-2026-07/amd-physical-ai-locomotion
-export MUJOCO_GL=osmesa
-export PYTHONPATH="$PWD"
-
+apt-get install -y ffmpeg
 python3 << 'PYEOF'
-from src import config as C
-C.set_headless_render_defaults()
-import jax
+import matplotlib; matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import mediapy as media, numpy as np, mujoco
 from mujoco_playground import registry as reg
-import mujoco
-import mujoco.mjx as mjx
-import mediapy as media
-import numpy as np
 
-cfg = reg.get_default_config('Go1JoystickFlatTerrain')
-cfg.impl = 'jax'
-env = reg.load('Go1JoystickFlatTerrain', config=cfg)
+cfg = reg.get_default_config("Go1JoystickFlatTerrain")
+cfg.impl = "jax"
+env = reg.load("Go1JoystickFlatTerrain", config=cfg)
+model = env.mj_model
+data = mujoco.MjData(model)
+mujoco.mj_forward(model, data)
 
-key = jax.random.PRNGKey(0)
-state = env.reset(key)
-
-r = mujoco.Renderer(env.mj_model, height=480, width=640)
 frames = []
 for i in range(100):
-    a = jax.random.uniform(jax.random.fold_in(key, i), (12,), minval=-1, maxval=1)
-    state = env.step(state, a)
-    mj_data = mjx.make_data(env.mj_model, state.data, impl='numpy')
-    r.update_scene(mj_data)
-    frames.append(r.render())
-del r
+    data.ctrl[:] = np.random.uniform(-1, 1, 12)
+    mujoco.mj_step(model, data)
+    fig, ax = plt.subplots(figsize=(6.4,4.8), subplot_kw={'projection':'3d'})
+    xpos = data.xpos
+    ax.scatter(xpos[:,0], xpos[:,1], xpos[:,2], c='blue', s=20)
+    for j in range(model.nbody):
+        p = model.body_parentid[j]
+        ax.plot([xpos[j,0],xpos[p,0]],[xpos[j,1],xpos[p,1]],[xpos[j,2],xpos[p,2]],'k-',lw=1)
+    ax.set_xlim(-1,1); ax.set_ylim(-1,1); ax.set_zlim(0,1)
+    fig.canvas.draw()
+    w, h = fig.canvas.get_width_height()
+    img = np.frombuffer(fig.canvas.tostring_argb(), dtype='uint8').reshape((h, w, 4))[:,:,1:]
+    frames.append(img); plt.close(fig)
 
-media.write_video('outputs/demo.mp4', np.stack(frames), fps=30)
-print('✅ outputs/demo.mp4')
+media.write_video("outputs/demo.mp4", np.stack(frames), fps=30)
+print(f"✅ outputs/demo.mp4 ({len(frames)} frames)")
 PYEOF
 ```
 
