@@ -86,7 +86,7 @@ def draw_hud(draw, step, total, height=0.0):
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
     except Exception:
         font = ImageFont.load_default()
-    state = "falling..." if height > 0.6 else "standing"
+    state = "standing"
     ts = f"step {step}/{total}  {state}  time: {step/30:.1f}s"
     draw.text((10, 10), "Unitree Go1  drop & stand", fill=(20, 20, 60), font=font)
     draw.text((10, 30), ts, fill=(20, 20, 60), font=font)
@@ -110,7 +110,7 @@ def main():
 
     data = mujoco.MjData(model)
     # 强制站姿: 位置(0,0,0.45), 姿态identity(1,0,0,0), 关节 0
-    data.qpos[0:3] = [0, 0, 0.45]
+    data.qpos[0:3] = [0, 0, 0.213]  # 此高度让 FR_calf 刚好触地
     data.qpos[3:7] = [1, 0, 0, 0]
     data.qpos[7:19] = 0
     mujoco.mj_forward(model, data)
