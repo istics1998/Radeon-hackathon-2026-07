@@ -4,6 +4,14 @@
 >
 > **Track 3（物理 AI）**  ——  **AMD AI DevMaster 黑客松**参赛作品。
 
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![ROCm](https://img.shields.io/badge/ROCm-7.2.1-red)
+![JAX](https://img.shields.io/badge/JAX-0.11-blue)
+![Python](https://img.shields.io/badge/Python-3.12-green)
+![Platform](https://img.shields.io/badge/Platform-AMD%20Radeon%20gfx1100-orange)
+
+**🎥 [Demo Video on YouTube/Bilibili](https://github.com/istics1998/Radeon-hackathon-2026-07)** · [提交物文档](docs/HANDOFF.md) · [ROCm Bug 报告](docs/ROCM_BUG_REPORT.md)
+
 ---
 
 ## 1. 项目概述 / Project Overview
