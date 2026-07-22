@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Improved demo video renderer — uses real MuJoCo geom data.
+Demo video renderer — stable body-center + thick-line robot render.
 
-Draws proper Go1 quadruped with body boxes, leg capsules, and ground plane.
-Avoids MuJoCo Renderer (broken in 3.10) — uses matplotlib Agg + CPU MuJoCo.
+Reads body positions (xpos) from CPU MuJoCo data and draws the Go1 as:
+  - Torso: large semi-transparent box
+  - 4 legs: thick colored lines (hip→knee→foot)
+  - Feet: colored dots (red when touching ground)
+  - Ground: grid plane
+  - Info overlay
 
 Usage:
     python3 scripts/make_demo_video.py
@@ -12,97 +16,96 @@ Usage:
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 import mujoco
 import imageio
 from mujoco_playground import registry as reg
 from pathlib import Path
 
-GEOM_BOX = mujoco.mjtGeom.mjGEOM_BOX
-GEOM_CAPSULE = mujoco.mjtGeom.mjGEOM_CAPSULE
-GEOM_ELLIPSOID = mujoco.mjtGeom.mjGEOM_ELLIPSOID
-GEOM_CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
-GEOM_SPHERE = mujoco.mjtGeom.mjGEOM_SPHERE
-GEOM_PLANE = mujoco.mjtGeom.mjGEOM_PLANE
+# Go1 body hierarchy (typical nbody layout for quadruped with 6-dof free joint)
+# body[0]=world, body[1]=torso, then 4 legs each with thigh+shin+foot
+# We'll discover it at runtime
 
 
-def box_faces(center, size, rot):
-    sx, sy, sz = size
+def find_leg_bodies(model):
+    """Return dict mapping leg_name -> (hip_body_id, knee_body_id, foot_body_id)."""
+    # Strategy: starting from body 1 (torso), walk through body tree
+    # to find 4 legs with 3 segments each
+    children = {i: [] for i in range(model.nbody)}
+    for j in range(1, model.nbody):
+        p = model.body_parentid[j]
+        children[p].append(j)
+
+    legs = {}
+    leg_names = ["FR", "FL", "RR", "RL"]
+    torso_children = children[1]  # direct children of torso
+    for idx, child in enumerate(torso_children[:4]):  # typically 4 in correct order
+        knee_children = children.get(child, [])
+        foot = knee_children[0] if knee_children else None
+        foot_children = children.get(foot, [])
+        foot2 = foot_children[0] if foot_children else None
+        legs[leg_names[idx] if idx < len(leg_names) else f"leg{idx}"] = {
+            "hip": child, "knee": foot if foot else child, "foot": foot2 if foot2 else foot if foot else child
+        }
+
+    return legs, children
+
+
+def draw_torso_box(ax, xpos, xmat):
+    """Draw the torso as a box from body[1] position+orientation."""
+    center = xpos[1]
+    # Use the body's rotation matrix (3x3)
+    rot = xmat[1].reshape(3, 3) if xmat[1].size == 9 else xmat[1]
+
+    # Torso approximate size (Go1)
+    sx, sy, sz = 0.20, 0.42, 0.12
     corners_local = np.array([
         [-sx, -sy, -sz], [sx, -sy, -sz], [sx, sy, -sz], [-sx, sy, -sz],
         [-sx, -sy,  sz], [sx, -sy,  sz], [sx, sy,  sz], [-sx, sy,  sz],
     ])
-    return corners_local @ rot.T + center
+    corners = corners_local @ rot.T + center
+
+    # Draw edges (wireframe box — always works)
+    edges = [
+        (0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)
+    ]
+    for i, j in edges:
+        ax.plot([corners[i,0], corners[j,0]],
+                [corners[i,1], corners[j,1]],
+                [corners[i,2], corners[j,2]],
+                color='#1a1a2e', lw=3, solid_capstyle='round')
 
 
-def get_world_geom(model, data, g):
-    body_id = model.geom_bodyid[g]
-    bpos = data.xpos[body_id].copy()
-    brot = data.xmat[body_id].reshape(3, 3).copy()
-    gpos_local = model.geom_pos[g]
-    gpos = bpos + brot @ gpos_local
-    return gpos, brot, model.geom_size[g].copy(), model.geom_rgba[g].copy(), model.geom_type[g]
+def draw_leg(ax, xpos, leg, color):
+    """Draw one leg as hip→knee→foot thick lines + joint dots."""
+    hip = leg["hip"]
+    knee = leg["knee"]
+    foot = leg["foot"]
+
+    # Draw segments
+    for (a, b) in [(hip, knee), (knee, foot)]:
+        ax.plot([xpos[a, 0], xpos[b, 0]],
+                [xpos[a, 1], xpos[b, 1]],
+                [xpos[a, 2], xpos[b, 2]],
+                color=color, lw=6, solid_capstyle='round')
+
+    # Joint dots
+    ax.scatter(*xpos[hip], color=color, s=50, zorder=5)
+    ax.scatter(*xpos[knee], color=color, s=40, zorder=5)
+    ax.scatter(*xpos[foot], color='red' if xpos[foot,2] < 0.03 else color,
+               s=60, zorder=5)
 
 
-def draw_geom(ax, pos, rot, size, rgba, gtype):
-    color = rgba[:3]
-    alpha = 0.92
-
-    if gtype == GEOM_BOX:
-        corners = box_faces(pos, size, rot)
-        faces = [
-            [corners[0], corners[1], corners[2], corners[3]],
-            [corners[4], corners[5], corners[6], corners[7]],
-            [corners[0], corners[1], corners[5], corners[4]],
-            [corners[2], corners[3], corners[7], corners[6]],
-            [corners[0], corners[3], corners[7], corners[4]],
-            [corners[1], corners[2], corners[6], corners[5]],
-        ]
-        coll = Poly3DCollection(faces, alpha=alpha)
-        coll.set_facecolor(color)
-        coll.set_edgecolor('black')
-        coll.set_linewidth(0.4)
-        ax.add_collection3d(coll)
-
-    elif gtype in (GEOM_CAPSULE, GEOM_CYLINDER):
-        axis = rot[:, 0] * size[0]
-        p1 = pos - axis
-        p2 = pos + axis
-        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
-                color=color, lw=10, solid_capstyle='round', alpha=alpha)
-        r = size[1] if gtype == GEOM_CAPSULE else size[0] * 0.8
-        for p in (p1, p2):
-            u, v = np.mgrid[0:2*np.pi:6j, 0:np.pi:3j]
-            x = r * np.cos(u) * np.sin(v)
-            y = r * np.sin(u) * np.sin(v)
-            z = r * np.cos(v)
-            pts = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=0) + p[:, None]
-            ax.plot_surface(pts[0].reshape(x.shape), pts[1].reshape(x.shape),
-                            pts[2].reshape(x.shape), color=color, alpha=alpha, linewidth=0)
-
-    elif gtype in (GEOM_ELLIPSOID, GEOM_SPHERE):
-        u, v = np.mgrid[0:2*np.pi:10j, 0:np.pi:5j]
-        x = size[0] * np.cos(u) * np.sin(v)
-        y = size[0] * np.sin(u) * np.sin(v)
-        z = size[0] * np.cos(v)
-        if gtype == GEOM_ELLIPSOID:
-            scale = np.array([size[0], size[1], size[2]])
-            pts = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=0) * scale[:, None]
-        else:
-            pts = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=0)
-        pts = rot @ pts + pos[:, None]
-        ax.plot_surface(pts[0].reshape(x.shape), pts[1].reshape(x.shape),
-                        pts[2].reshape(x.shape), color=color, alpha=alpha, linewidth=0)
-
-
-def draw_ground(ax, extent=1.0):
+def draw_ground(ax, extent=0.9):
+    """Draw ground plane + subtle grid."""
+    # Semi-transparent plane
     xx, yy = np.meshgrid([-extent, extent], [-extent, extent])
-    zz = np.zeros_like(xx)
-    ax.plot_surface(xx, yy, zz, color='#e8e8e8', alpha=0.7, linewidth=0)
-    for v in np.linspace(-extent, extent, 9):
-        ax.plot([v, v], [-extent, extent], [0, 0], color='gray', lw=0.3, alpha=0.4)
-        ax.plot([-extent, extent], [v, v], [0, 0], color='gray', lw=0.3, alpha=0.4)
+    ax.plot_surface(xx, yy, np.zeros_like(xx),
+                    color='#f0f0f0', alpha=0.5, linewidth=0)
+    # Grid
+    for v in np.linspace(-extent, extent, 7):
+        ax.plot([v, v], [-extent, extent], [0, 0], color='gray', lw=0.3, alpha=0.3)
+        ax.plot([-extent, extent], [v, v], [0, 0], color='gray', lw=0.3, alpha=0.3)
 
 
 def main():
@@ -122,40 +125,41 @@ def main():
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
-    plane_geom_ids = {g for g in range(model.ngeom)
-                      if model.geom_type[g] == GEOM_PLANE}
+    legs, children = find_leg_bodies(model)
+    leg_colors = {"FR": "orangered", "FL": "royalblue",
+                  "RR": "seagreen", "RL": "darkorange"}
+
+    print(f"[make_demo_video] Bodies: {model.nbody}, Legs: {len(legs)}")
+    for name, l in legs.items():
+        print(f"  {name}: hip={l['hip']} knee={l['knee']} foot={l['foot']}")
 
     frames = []
     for i in range(num_frames):
         data.ctrl[:] = np.random.uniform(-1, 1, 12)
         mujoco.mj_step(model, data)
+        xpos = data.xpos
+        xmat = data.xmat
 
         fig = plt.figure(figsize=(8, 6), facecolor='white')
         ax = fig.add_subplot(111, projection='3d', facecolor='white')
-        ax.view_init(elev=-20, azim=70)
-        ax.set_xlim(-0.8, 0.8)
-        ax.set_ylim(-0.8, 0.8)
-        ax.set_zlim(-0.05, 0.7)
+        ax.view_init(elev=-20, azim=60)
+        ax.set_xlim(-0.7, 0.7)
+        ax.set_ylim(-0.7, 0.7)
+        ax.set_zlim(-0.05, 0.65)
         ax.set_xticklabels([]); ax.set_yticklabels([]); ax.set_zticklabels([])
-        ax.set_xlabel(''); ax.set_ylabel(''); ax.set_zlabel('')
 
-        draw_ground(ax, extent=0.8)
+        draw_ground(ax)
+        draw_torso_box(ax, xpos, xmat)
 
-        for g in range(model.ngeom):
-            if g in plane_geom_ids:
-                continue
-            pos, rot, size, rgba, gtype = get_world_geom(model, data, g)
-            try:
-                draw_geom(ax, pos, rot, size, rgba, gtype)
-            except Exception as e:
-                # Skip problematic geoms instead of crashing
-                continue
+        for name, leg in legs.items():
+            color = leg_colors.get(name, "gray")
+            draw_leg(ax, xpos, leg, color)
 
-        ax.set_title("Unitree Go1 — Random Policy Rollout (matplotlib CPU render)",
-                     fontsize=11, pad=8)
-        ax.text2D(0.02, 0.98, f"step {i+1}/{num_frames}",
+        # Title + step counter
+        ax.set_title("Unitree Go1 — random policy", fontsize=12, pad=6)
+        ax.text2D(0.02, 0.97, f"step {i+1}/{num_frames}",
                   transform=ax.transAxes, fontsize=9, va='top',
-                  bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                  bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7))
 
         fig.canvas.draw()
         w, h = fig.canvas.get_width_height()
@@ -168,23 +172,13 @@ def main():
             print(f"  rendered {i + 1}/{num_frames}")
 
     print(f"[make_demo_video] Writing {out_path} ...")
-    # Pad to 16-aligned dimensions for x264 macro_block_size
-    h, w = frames[0].shape[:2]
-    pad_h = (16 - h % 16) % 16
-    pad_w = (16 - w % 16) % 16
-    if pad_h or pad_w:
-        frames = [np.pad(f, ((0, pad_h), (0, pad_w), (0, 0)),
-                         mode='edge') for f in frames]
+    h_fix = (16 - frames[0].shape[0] % 16) % 16
+    w_fix = (16 - frames[0].shape[1] % 16) % 16
+    if h_fix or w_fix:
+        frames = [np.pad(f, ((0,h_fix),(0,w_fix),(0,0)), mode='edge') for f in frames]
 
-    imageio.mimsave(
-        str(out_path),
-        np.stack(frames),
-        fps=fps,
-        codec="libx264",
-        quality=10,
-        pixelformat="yuv420p",
-    )
-
+    imageio.mimsave(str(out_path), np.stack(frames), fps=fps,
+                    codec="libx264", quality=10, pixelformat="yuv420p")
     size_kb = out_path.stat().st_size / 1024
     print(f"✅ {out_path} ({size_kb:.0f} KB, {num_frames} frames)")
 
