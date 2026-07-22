@@ -109,10 +109,7 @@ def main():
     name2id = find_body_ids(model)
 
     data = mujoco.MjData(model)
-
-    # Lift robot up to start
-    data.qpos[2] = 0.7
-    mujoco.mj_forward(model, data)
+    mujoco.mj_forward(model, data)  # 默认姿态就是站立(高度0.45m)
 
     frames = []
     for i in range(num_frames):
