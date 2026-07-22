@@ -114,7 +114,7 @@ def title_card(text, sec=3):
             draw.text((x, y), line, fill=(220,220,240), font=font)
             y += 40
         frames.append(np.array(img))
-    out = Path("/tmp/title.mp4")
+    out = Path(f"/tmp/title_{abs(hash(text))}.mp4")
     imageio.mimsave(str(out), np.stack(frames), fps=30, codec="libx264", quality=10)
     return out
 
