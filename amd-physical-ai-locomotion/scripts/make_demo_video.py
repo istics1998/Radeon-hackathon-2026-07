@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Demo video renderer — 2D side-view via PIL, thick lines guaranteed visible.
+Demo video renderer — PIL 2D with PD controller for stable standing.
 
-Reads body positions from CPU MuJoCo, projects to 2D (side view),
-draws with PIL rectangles. No matplotlib 3D rendering quirks.
+Reads body positions from CPU MuJoCo, applies a simple PD position controller
+to maintain a stable quadruped standing pose. Draws robot as 2D side view.
 
 Usage:
     python3 scripts/make_demo_video.py
@@ -16,101 +16,81 @@ import imageio
 from mujoco_playground import registry as reg
 from pathlib import Path
 
-# Image dimensions
 W, H = 640, 480
-SCALE = 200  # pixels per meter
-# Camera looks from +x axis, so we plot (y, z) — side view
-# y goes to image x, z goes to image y (inverted, so up is up)
+SCALE = 200
+
+# Body names for each leg (hip, thigh, calf)
+LEG_BODIES = {
+    'FR': ('FR_hip', 'FR_thigh', 'FR_calf'),
+    'FL': ('FL_hip', 'FL_thigh', 'FL_calf'),
+    'RR': ('RR_hip', 'RR_thigh', 'RR_calf'),
+    'RL': ('RL_hip', 'RL_thigh', 'RL_calf'),
+}
+LEG_COLORS = {
+    'FR': (200, 40, 40), 'FL': (40, 80, 200),
+    'RR': (40, 180, 80), 'RL': (220, 130, 40),
+}
 
 
-def project(pos, camera_origin=(2.0, 0.0, 0.3)):
-    """Project 3D world to 2D image coords (y→x, z→y, scaled)."""
-    # Simple orthographic: drop the x-axis, use y for image x, z for image y
-    img_x = pos[1] * SCALE + W / 2
-    img_y = H / 2 - pos[2] * SCALE
-    return int(img_x), int(img_y)
+def find_body_ids(model):
+    """Build name→id map for all bodies."""
+    name2id = {}
+    for j in range(model.nbody):
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, j)
+        name2id[nm] = j
+    return name2id
 
 
 def draw_ground(draw, extent=0.8):
-    """Draw ground line + grid."""
     gy = H // 2
-    # Main ground line
     draw.line([(0, gy), (W, gy)], fill=(60, 60, 60), width=2)
-    # Subtle perspective lines (radiating from center to horizon)
     for v in np.linspace(-extent, extent, 7):
-        ix, _ = project([0, v, 0])
+        ix = int(v * SCALE + W / 2)
         draw.line([(W // 2, gy), (ix, gy - 30)], fill=(180, 180, 180), width=1)
 
 
-def draw_torso(draw, xpos, xmat):
-    """Draw torso as a thick dark rectangle (side view)."""
-    # Get torso center and orientation in 2D
-    cy, cz = project(xpos[1])
-    # Use body xmat to get rotation around y/z axis
-    # For side view, we just draw a horizontal rectangle for the torso
-    torso_w, torso_h = 100, 30  # pixels
-    draw.rectangle(
-        [cy - torso_w // 2, cz - torso_h // 2,
-         cy + torso_w // 2, cz + torso_h // 2],
-        fill=(20, 30, 50), outline=(0, 0, 0), width=2
-    )
-    # Head indicator (small light square on top-front)
-    draw.rectangle(
-        [cy - 40, cz - torso_h // 2 - 12,
-         cy - 10, cz - torso_h // 2 + 4],
-        fill=(180, 180, 200), outline=(0, 0, 0), width=1
-    )
+def draw_torso(draw, xpos, name2id):
+    cy = int(xpos[name2id['trunk'], 1] * SCALE + W / 2)
+    cz = int(H / 2 - xpos[name2id['trunk'], 2] * SCALE)
+    draw.rectangle([cy-80, cz-18, cy+80, cz+18],
+                   fill=(20, 30, 50), outline=(0, 0, 0), width=2)
 
 
-def draw_leg(draw, xpos, hip, knee, foot, color):
-    """Draw one leg as thick lines (hip→knee→foot) with joint circles."""
-    hy, hz = project(xpos[hip])
-    ky, kz = project(xpos[knee])
-    fy, fz = project(xpos[foot])
+def draw_leg(draw, xpos, name2id, leg_name, color):
+    hid = name2id[LEG_BODIES[leg_name][0]]
+    tid = name2id[LEG_BODIES[leg_name][1]]
+    cid = name2id[LEG_BODIES[leg_name][2]]
 
-    # Thigh
-    draw.line([(hy, hz), (ky, kz)], fill=color, width=10)
-    # Shin
-    draw.line([(ky, kz), (fy, fz)], fill=color, width=8)
-    # Joints
-    for x, y in [(hy, hz), (ky, kz), (fy, fz)]:
-        r = 6
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=(0, 0, 0))
-    # Foot dot
-    foot_color = (220, 40, 40) if fz > H // 2 - 10 else color
-    r = 8
-    draw.ellipse([fy - r, fz - r, fy + r, fz + r], fill=foot_color, outline=(0, 0, 0))
+    hx = int(xpos[hid, 1] * SCALE + W / 2)
+    hy = int(H / 2 - xpos[hid, 2] * SCALE)
+    tx = int(xpos[tid, 1] * SCALE + W / 2)
+    ty = int(H / 2 - xpos[tid, 2] * SCALE)
+    cx = int(xpos[cid, 1] * SCALE + W / 2)
+    cy = int(H / 2 - xpos[cid, 2] * SCALE)
 
-
-def find_legs(model):
-    children = {i: [] for i in range(model.nbody)}
-    for j in range(1, model.nbody):
-        children[model.body_parentid[j]].append(j)
-
-    legs = []
-    # Take first 4 children of torso (body 1) as legs
-    for c in children[1][:4]:
-        knee = children[c][0] if children[c] else c
-        foot = children[knee][0] if children[knee] else knee
-        legs.append((c, knee, foot))
-    return legs
+    # Hip→thigh (thick)
+    draw.line([(hx, hy), (tx, ty)], fill=color, width=10)
+    # Thigh→calf (thick)
+    draw.line([(tx, ty), (cx, cy)], fill=color, width=8)
+    # Joint circles
+    for x, y in [(hx, hy), (tx, ty), (cx, cy)]:
+        draw.ellipse([x-5, y-5, x+5, y+5], fill=color)
+    # Foot (ground contact indicator)
+    red = (220, 40, 40)
+    foot_color = red if xpos[cid, 2] < 0.03 else color
+    draw.ellipse([cx-8, cy-8, cx+8, cy+8], fill=foot_color)
 
 
 def draw_hud(draw, step, total, height=0.0):
-    """Draw info overlay."""
-    state = "falling..." if height > 0.35 else "standing" if height > 0.15 else "landing"
-    txt = f"step {step}/{total}  {state}"
-    times = f"time: {step/30:.1f}s / {total/30:.1f}s"
-    # PIL default font is small but works
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
     except Exception:
         font = ImageFont.load_default()
-    draw.text((10, 10), "Unitree Go1  drop test", fill=(20, 20, 60), font=font)
-    draw.text((10, 30), txt, fill=(20, 20, 60), font=font)
-    draw.text((10, 50), times, fill=(80, 80, 80), font=font)
-    draw.text((10, H - 30), "AMD Radeon  ROCm 7.2.1  JAX 0.11.0",
-              fill=(80, 80, 80), font=font)
+    state = "falling..." if height > 0.35 else "standing"
+    ts = f"step {step}/{total}  {state}  time: {step/30:.1f}s"
+    draw.text((10, 10), "Unitree Go1  drop & stand", fill=(20, 20, 60), font=font)
+    draw.text((10, 30), ts, fill=(20, 20, 60), font=font)
+    draw.text((10, H - 30), "AMD Radeon  ROCm 7.2.1  JAX 0.11.0", fill=(80, 80, 80), font=font)
 
 
 def main():
@@ -126,42 +106,39 @@ def main():
     cfg.impl = "jax"
     env = reg.load(env_name, config=cfg)
     model = env.mj_model
+    name2id = find_body_ids(model)
 
     data = mujoco.MjData(model)
-    # 用 key[0] 的稳定站立姿态初始化
-    mujoco.mj_resetDataKeyframe(model, data, 0)
-    # 抬高机器人从空中落下 (1.0m 高)
-    key_ctrl = data.qpos[7:19].copy()
-    data.qpos[2] = 1.0  # 从 1.0m 高空开始
-    mujoco.mj_forward(model, data)
-    legs = find_legs(model)
-    leg_colors = [(200, 40, 40), (40, 80, 200), (40, 180, 80), (220, 130, 40)]
 
-    print(f"[make_demo_video] Bodies: {model.nbody}, Legs: {len(legs)}")
+    # PD controller gains for stable standing
+    KP = 80.0   # proportional gain
+    KD = 5.0    # derivative gain
+    # Target: all joints at 0 (standing pose with height ~0.45m)
+    qpos_target = np.zeros(12)
+
+    # Lift robot up to start
+    data.qpos[2] = 0.7
+    mujoco.mj_forward(model, data)
 
     frames = []
-    standing_frame = 0
     for i in range(num_frames):
-        # 用 keyframe 的 qpos 作为 ctrl 目标
-        # 落地后(约第60帧)加入轻微呼吸幅度,让机器人看起来有生命感
-        phase = i * 0.15
-        live_amp = 0.04 * min(1.0, max(0, (i - 60) / 20))
-        live_ctrl = key_ctrl + live_amp * np.sin(phase)
-        data.ctrl[:] = live_ctrl
+        # PD position controller: tau = KP * (target - q) - KD * qvel
+        for j in range(12):
+            error = qpos_target[j] - data.qpos[7 + j]
+            data.ctrl[j] = KP * error - KD * data.qvel[6 + j]
+
         mujoco.mj_step(model, data)
         xpos = data.xpos
-        if data.xpos[1, 2] < 0.4 and standing_frame == 0:
-            standing_frame = i
 
         img = Image.new("RGB", (W, H), (250, 250, 252))
         draw = ImageDraw.Draw(img)
         draw_ground(draw)
-        draw_torso(draw, xpos, data.xmat)
 
-        for (hip, knee, foot), color in zip(legs, leg_colors):
-            draw_leg(draw, xpos, hip, knee, foot, color)
+        for leg_name in ['FR', 'FL', 'RR', 'RL']:
+            draw_leg(draw, xpos, name2id, leg_name, LEG_COLORS[leg_name])
 
-        draw_hud(draw, i + 1, num_frames, xpos[1, 2])
+        draw_torso(draw, xpos, name2id)
+        draw_hud(draw, i + 1, num_frames, xpos[name2id['trunk'], 2])
         frames.append(np.array(img))
 
         if (i + 1) % 10 == 0:
