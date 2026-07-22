@@ -117,12 +117,12 @@ def main():
 
     frames = []
     for i in range(num_frames):
-        # 逆向动力学 (重力补偿) + PD 阻尼 (防止累积漂移)
-        mujoco.mj_inverse(model, data)
+        # 不 mj_step, 用 mj_forward + 微小正弦扰动 qpos 显得"活着"
+        # 改完后 mj_forward 重算 xpos 但不推进物理
+        phase = i * 0.10
         for j in range(12):
-            data.ctrl[j] = data.qfrc_inverse[j] - 5.0 * data.qvel[6 + j]
-
-        mujoco.mj_step(model, data)
+            data.qpos[7 + j] = 0.04 * np.sin(phase + j * 0.3)
+        mujoco.mj_forward(model, data)
         xpos = data.xpos
 
         img = Image.new("RGB", (W, H), (250, 250, 252))
