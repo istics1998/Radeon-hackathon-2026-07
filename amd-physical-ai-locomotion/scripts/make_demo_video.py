@@ -1,95 +1,108 @@
 #!/usr/bin/env python3
 """
-Improved demo video renderer for Route C deliverable.
+Improved demo video renderer — uses real MuJoCo geom data.
 
-Generates `outputs/demo.mp4` using matplotlib (Agg) + CPU MuJoCo + imageio.
-Draws a proper Go1 quadruped: torso box, leg segments, ground plane, info overlay.
+Draws proper Go1 quadruped with body boxes, leg capsules, and ground plane.
+Avoids MuJoCo Renderer (broken in 3.10) — uses matplotlib Agg + CPU MuJoCo.
 
 Usage:
     python3 scripts/make_demo_video.py
-
-Dependencies: matplotlib imageio imageio-ffmpeg mujoco mujoco-mjx playground
 """
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 import mujoco
 import imageio
 from mujoco_playground import registry as reg
 from pathlib import Path
 
-# Go1 body hierarchy (from MuJoCo model)
-# 0:world  1:torso  2:FR_thigh  3:FR_shin  4:FL_thigh  5:FL_shin
-# 6:RR_thigh  7:RR_shin  8:RL_thigh  9:RL_shin  10:FR_foot  11:FL_foot  12:RR_foot  13:RL_foot
-TORSO = 1
-# (name, parent, color) for each leg segment
-LEG_SEGMENTS = [
-    # FR leg
-    (2, 1, 'orangered'),    (3, 2, 'tomato'),      (10, 3, 'lightsalmon'),
-    # FL leg
-    (4, 1, 'royalblue'),    (5, 4, 'cornflowerblue'), (11, 5, 'lightsteelblue'),
-    # RR leg
-    (6, 1, 'seagreen'),     (7, 6, 'mediumseagreen'),  (12, 7, 'palegreen'),
-    # RL leg
-    (8, 1, 'darkorange'),   (9, 8, 'orange'),          (13, 9, 'moccasin'),
-]
-
-# Geoms that are part of the torso (box)
-TORSO_GEOM_IDS = {0, 1, 2, 3}  # approximate, will refine
+GEOM_BOX = mujoco.mjtGeom.mjGEOM_BOX
+GEOM_CAPSULE = mujoco.mjtGeom.mjGEOM_CAPSULE
+GEOM_ELLIPSOID = mujoco.mjtGeom.mjGEOM_ELLIPSOID
+GEOM_CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
+GEOM_SPHERE = mujoco.mjtGeom.mjGEOM_SPHERE
+GEOM_PLANE = mujoco.mjtGeom.mjGEOM_PLANE
 
 
-def draw_ground(ax, xlim=(-0.8, 0.8), ylim=(-0.8, 0.8)):
-    """Draw a semi-transparent ground plane with grid."""
-    xx = np.linspace(xlim[0], xlim[1], 9)
-    yy = np.linspace(ylim[0], ylim[1], 9)
-    for x in xx:
-        ax.plot([x, x], [ylim[0], ylim[1]], [0, 0], color='gray', lw=0.3, alpha=0.4)
-    for y in yy:
-        ax.plot([xlim[0], xlim[1]], [y, y], [0, 0], color='gray', lw=0.3, alpha=0.4)
+def box_faces(center, size, rot):
+    sx, sy, sz = size
+    corners_local = np.array([
+        [-sx, -sy, -sz], [sx, -sy, -sz], [sx, sy, -sz], [-sx, sy, -sz],
+        [-sx, -sy,  sz], [sx, -sy,  sz], [sx, sy,  sz], [-sx, sy,  sz],
+    ])
+    return corners_local @ rot.T + center
 
 
-def draw_torso(ax, xpos, model):
-    """Draw the torso as a box using torso geom positions."""
-    # Collect geom positions belonging to the torso
-    torso_pts = []
-    for g in range(model.ngeom):
-        if model.geom_bodyid[g] == TORSO:
-            torso_pts.append(xpos[model.geom_bodyid[g]])
-    if torso_pts:
-        center = np.mean(torso_pts, axis=0)
-        # Draw a simple box representation
-        w, l, h = 0.12, 0.35, 0.10
-        corners = np.array([
-            [-w/2, -l/2, -h/2], [ w/2, -l/2, -h/2], [ w/2,  l/2, -h/2], [-w/2,  l/2, -h/2],
-            [-w/2, -l/2,  h/2], [ w/2, -l/2,  h/2], [ w/2,  l/2,  h/2], [-w/2,  l/2,  h/2],
-        ]) + center
-        for i, j in [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]:
-            ax.plot([corners[i,0], corners[j,0]],
-                    [corners[i,1], corners[j,1]],
-                    [corners[i,2], corners[j,2]], color='#2c3e50', lw=2.5)
+def get_world_geom(model, data, g):
+    body_id = model.geom_bodyid[g]
+    bpos = data.xpos[body_id].copy()
+    brot = data.xmat[body_id].reshape(3, 3).copy()
+    gpos_local = model.geom_pos[g]
+    gpos = bpos + brot @ gpos_local
+    return gpos, brot, model.geom_size[g].copy(), model.geom_rgba[g].copy(), model.geom_type[g]
 
 
-def draw_legs(ax, xpos):
-    """Draw leg segments as thick colored lines."""
-    for child, parent, color in LEG_SEGMENTS:
-        ax.plot(
-            [xpos[child, 0], xpos[parent, 0]],
-            [xpos[child, 1], xpos[parent, 1]],
-            [xpos[child, 2], xpos[parent, 2]],
-            color=color, lw=4, solid_capstyle='round',
-        )
+def draw_geom(ax, pos, rot, size, rgba, gtype):
+    color = rgba[:3]
+    alpha = 0.92
+
+    if gtype == GEOM_BOX:
+        corners = box_faces(pos, size, rot)
+        faces = [
+            [corners[0], corners[1], corners[2], corners[3]],
+            [corners[4], corners[5], corners[6], corners[7]],
+            [corners[0], corners[1], corners[5], corners[4]],
+            [corners[2], corners[3], corners[7], corners[6]],
+            [corners[0], corners[3], corners[7], corners[4]],
+            [corners[1], corners[2], corners[6], corners[5]],
+        ]
+        coll = Poly3DCollection(faces, alpha=alpha)
+        coll.set_facecolor(color)
+        coll.set_edgecolor('black')
+        coll.set_linewidth(0.4)
+        ax.add_collection3d(coll)
+
+    elif gtype in (GEOM_CAPSULE, GEOM_CYLINDER):
+        axis = rot[:, 0] * size[0]
+        p1 = pos - axis
+        p2 = pos + axis
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
+                color=color, lw=10, solid_capstyle='round', alpha=alpha)
+        r = size[1] if gtype == GEOM_CAPSULE else size[0] * 0.8
+        for p in (p1, p2):
+            u, v = np.mgrid[0:2*np.pi:6j, 0:np.pi:3j]
+            x = r * np.cos(u) * np.sin(v)
+            y = r * np.sin(u) * np.sin(v)
+            z = r * np.cos(v)
+            pts = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=0) + p[:, None]
+            ax.plot_surface(pts[0].reshape(x.shape), pts[1].reshape(x.shape),
+                            pts[2].reshape(x.shape), color=color, alpha=alpha, linewidth=0)
+
+    elif gtype in (GEOM_ELLIPSOID, GEOM_SPHERE):
+        u, v = np.mgrid[0:2*np.pi:10j, 0:np.pi:5j]
+        x = size[0] * np.cos(u) * np.sin(v)
+        y = size[0] * np.sin(u) * np.sin(v)
+        z = size[0] * np.cos(v)
+        if gtype == GEOM_ELLIPSOID:
+            scale = np.array([size[0], size[1], size[2]])
+            pts = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=0) * scale[:, None]
+        else:
+            pts = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=0)
+        pts = rot @ pts + pos[:, None]
+        ax.plot_surface(pts[0].reshape(x.shape), pts[1].reshape(x.shape),
+                        pts[2].reshape(x.shape), color=color, alpha=alpha, linewidth=0)
 
 
-def draw_foot_contacts(ax, xpos, contact_dist):
-    """Highlight feet near the ground."""
-    # Foot bodies
-    foot_bodies = [10, 11, 12, 13]
-    for fb in foot_bodies:
-        z = xpos[fb, 2]
-        if z < 0.02:  # near ground
-            ax.scatter(*xpos[fb], color='red', s=60, zorder=10)
+def draw_ground(ax, extent=1.0):
+    xx, yy = np.meshgrid([-extent, extent], [-extent, extent])
+    zz = np.zeros_like(xx)
+    ax.plot_surface(xx, yy, zz, color='#e8e8e8', alpha=0.7, linewidth=0)
+    for v in np.linspace(-extent, extent, 9):
+        ax.plot([v, v], [-extent, extent], [0, 0], color='gray', lw=0.3, alpha=0.4)
+        ax.plot([-extent, extent], [v, v], [0, 0], color='gray', lw=0.3, alpha=0.4)
 
 
 def main():
@@ -109,47 +122,45 @@ def main():
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
+    plane_geom_ids = {g for g in range(model.ngeom)
+                      if model.geom_type[g] == GEOM_PLANE}
+
     frames = []
     for i in range(num_frames):
-        # Random action (12-dim: 3 per leg × 4 legs)
         data.ctrl[:] = np.random.uniform(-1, 1, 12)
         mujoco.mj_step(model, data)
 
-        fig = plt.figure(figsize=(7.2, 5.4), facecolor='white')
+        fig = plt.figure(figsize=(8, 6), facecolor='white')
         ax = fig.add_subplot(111, projection='3d', facecolor='white')
-
-        # Camera
-        ax.view_init(elev=-25, azim=90)
+        ax.view_init(elev=-20, azim=70)
         ax.set_xlim(-0.8, 0.8)
         ax.set_ylim(-0.8, 0.8)
-        ax.set_zlim(-0.05, 0.6)
+        ax.set_zlim(-0.05, 0.7)
+        ax.set_xticklabels([]); ax.set_yticklabels([]); ax.set_zticklabels([])
+        ax.set_xlabel(''); ax.set_ylabel(''); ax.set_zlabel('')
 
-        # Remove axis tick labels for cleaner look
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.set_zticklabels([])
+        draw_ground(ax, extent=0.8)
 
-        xpos = data.xpos
+        for g in range(model.ngeom):
+            if g in plane_geom_ids:
+                continue
+            pos, rot, size, rgba, gtype = get_world_geom(model, data, g)
+            try:
+                draw_geom(ax, pos, rot, size, rgba, gtype)
+            except Exception as e:
+                # Skip problematic geoms instead of crashing
+                continue
 
-        # Draw layers in order
-        draw_ground(ax)
-        draw_torso(ax, xpos, model)
-        draw_legs(ax, xpos)
-        draw_foot_contacts(ax, xpos, data.contact)
-
-        # Info overlay
-        ax.set_title(f"Unitree Go1 — Random Policy Rollout", fontsize=13, pad=8)
-        # Add text box with step info
-        text_str = f"Step {i+1}/{num_frames}"
-        ax.text2D(0.02, 0.98, text_str, transform=ax.transAxes,
-                  fontsize=10, verticalalignment='top',
+        ax.set_title("Unitree Go1 — Random Policy Rollout (matplotlib CPU render)",
+                     fontsize=11, pad=8)
+        ax.text2D(0.02, 0.98, f"step {i+1}/{num_frames}",
+                  transform=ax.transAxes, fontsize=9, va='top',
                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
         fig.canvas.draw()
         w, h = fig.canvas.get_width_height()
         img = np.frombuffer(fig.canvas.tostring_argb(), dtype="uint8").reshape(
-            (h, w, 4)
-        )[:, :, 1:]
+            (h, w, 4))[:, :, 1:]
         frames.append(img)
         plt.close(fig)
 
@@ -157,6 +168,14 @@ def main():
             print(f"  rendered {i + 1}/{num_frames}")
 
     print(f"[make_demo_video] Writing {out_path} ...")
+    # Pad to 16-aligned dimensions for x264 macro_block_size
+    h, w = frames[0].shape[:2]
+    pad_h = (16 - h % 16) % 16
+    pad_w = (16 - w % 16) % 16
+    if pad_h or pad_w:
+        frames = [np.pad(f, ((0, pad_h), (0, pad_w), (0, 0)),
+                         mode='edge') for f in frames]
+
     imageio.mimsave(
         str(out_path),
         np.stack(frames),
