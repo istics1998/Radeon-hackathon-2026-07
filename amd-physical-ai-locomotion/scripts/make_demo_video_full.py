@@ -39,7 +39,7 @@ FPS = 30
 NUM_STEPS = 200          # frames per camera view (~6.7s @ 30fps)
 ACTION_SMOOTH = 0.85     # low-pass on random actions so it isn't pure white noise
 SEED = 0
-OUT = Path("assets/demo_full2.mp4")
+OUT = Path("assets/demo_bob.mp4")   # new bobbing-gait version; old one stays as demo_full2.mp4
 
 # --- PIL fallback drawing constants (only used if mujoco.Renderer is unavailable)
 SCALE = 200
