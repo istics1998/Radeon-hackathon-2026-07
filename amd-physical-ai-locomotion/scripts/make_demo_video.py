@@ -133,7 +133,12 @@ def main():
 
     frames = []
     for i in range(num_frames):
-        data.ctrl[:] = np.random.uniform(-1, 1, 12)
+        # 前 30 帧: 0 动作(让它站住, 展示初始姿态)
+        # 后 70 帧: 小随机动作(模拟扰动, 但不至于立刻翻)
+        if i < 30:
+            data.ctrl[:] = 0.0
+        else:
+            data.ctrl[:] = np.random.uniform(-0.2, 0.2, 12)
         mujoco.mj_step(model, data)
         xpos = data.xpos
 
