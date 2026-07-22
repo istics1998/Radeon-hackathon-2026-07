@@ -109,14 +109,16 @@ def main():
     name2id = find_body_ids(model)
 
     data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)  # 默认姿态就是站立(高度0.45m)
+    # 强制设为 qpos=0 (站立姿态, 高度 0.445m, 不是 keyframe 0 的蹲姿)
+    data.qpos[:] = 0
+    mujoco.mj_forward(model, data)
 
     frames = []
     for i in range(num_frames):
-        # Inverse dynamics: compute the torques needed to maintain
-        # the current pose (gravity compensation)
+        # 逆向动力学 (重力补偿) + PD 阻尼 (防止累积漂移)
         mujoco.mj_inverse(model, data)
-        data.ctrl[:] = data.qfrc_inverse[:12]
+        for j in range(12):
+            data.ctrl[j] = data.qfrc_inverse[j] - 5.0 * data.qvel[6 + j]
 
         mujoco.mj_step(model, data)
         xpos = data.xpos
