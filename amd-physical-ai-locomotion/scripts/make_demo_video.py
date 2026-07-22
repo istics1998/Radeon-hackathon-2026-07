@@ -96,23 +96,26 @@ def find_legs(model):
     return legs
 
 
-def draw_hud(draw, step, total):
+def draw_hud(draw, step, total, height=0.0):
     """Draw info overlay."""
-    txt = f"step {step}/{total}" if step <= 30 else f"step {step}/{total}  standing"
+    state = "falling..." if height > 0.35 else "standing" if height > 0.15 else "landing"
+    txt = f"step {step}/{total}  {state}"
+    times = f"time: {step/30:.1f}s / {total/30:.1f}s"
     # PIL default font is small but works
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
     except Exception:
         font = ImageFont.load_default()
-    draw.text((10, 10), "Unitree Go1  random policy", fill=(20, 20, 60), font=font)
+    draw.text((10, 10), "Unitree Go1  drop test", fill=(20, 20, 60), font=font)
     draw.text((10, 30), txt, fill=(20, 20, 60), font=font)
+    draw.text((10, 50), times, fill=(80, 80, 80), font=font)
     draw.text((10, H - 30), "AMD Radeon  ROCm 7.2.1  JAX 0.11.0",
               fill=(80, 80, 80), font=font)
 
 
 def main():
     env_name = "Go1JoystickFlatTerrain"
-    num_frames = 100
+    num_frames = 250
     fps = 30
     out_dir = Path("outputs")
     out_dir.mkdir(exist_ok=True)
@@ -139,11 +142,14 @@ def main():
     frames = []
     standing_frame = 0
     for i in range(num_frames):
-        # 用 keyframe 的 qpos 作为 ctrl 目标来保持站立
-        data.ctrl[:] = key_ctrl
+        # 用 keyframe 的 qpos 作为 ctrl 目标
+        # 落地后(约第60帧)加入轻微呼吸幅度,让机器人看起来有生命感
+        phase = i * 0.15
+        live_amp = 0.04 * min(1.0, max(0, (i - 60) / 20))
+        live_ctrl = key_ctrl + live_amp * np.sin(phase)
+        data.ctrl[:] = live_ctrl
         mujoco.mj_step(model, data)
         xpos = data.xpos
-        # 检测是否落地站稳(torso 高度稳定在 0.28 附近)
         if data.xpos[1, 2] < 0.4 and standing_frame == 0:
             standing_frame = i
 
@@ -155,7 +161,7 @@ def main():
         for (hip, knee, foot), color in zip(legs, leg_colors):
             draw_leg(draw, xpos, hip, knee, foot, color)
 
-        draw_hud(draw, i + 1, num_frames)
+        draw_hud(draw, i + 1, num_frames, xpos[1, 2])
         frames.append(np.array(img))
 
         if (i + 1) % 10 == 0:
