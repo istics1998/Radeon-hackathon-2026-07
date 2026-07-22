@@ -125,6 +125,8 @@ def main():
     model = env.mj_model
 
     data = mujoco.MjData(model)
+    # 把机器人抬高 0.4m, 让它从空中落下
+    data.qpos[2] = 0.7
     mujoco.mj_forward(model, data)
     legs = find_legs(model)
     leg_colors = [(200, 40, 40), (40, 80, 200), (40, 180, 80), (220, 130, 40)]
@@ -133,12 +135,9 @@ def main():
 
     frames = []
     for i in range(num_frames):
-        # 前 30 帧: 0 动作(让它站住, 展示初始姿态)
-        # 后 70 帧: 小随机动作(模拟扰动, 但不至于立刻翻)
-        if i < 30:
-            data.ctrl[:] = 0.0
-        else:
-            data.ctrl[:] = np.random.uniform(-0.2, 0.2, 12)
+        # 全部 100 帧: 0 动作
+        # 让物理自然落地并保持站立姿态
+        data.ctrl[:] = 0.0
         mujoco.mj_step(model, data)
         xpos = data.xpos
 
