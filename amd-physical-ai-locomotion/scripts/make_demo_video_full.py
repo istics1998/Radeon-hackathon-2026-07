@@ -60,31 +60,36 @@ def _font(size):
 
 
 def rollout_real_physics(model, data, num_steps, rng, base_ctrl):
-    """Step TRUE MuJoCo dynamics while holding the standing pose and adding small
-    smoothed random perturbations around it, so the robot stays upright and just
-    shifts/steps gently instead of flailing. Returns mjData snapshots (copies).
+    """Step TRUE MuJoCo dynamics while driving a slow, gentle bob: the thigh/calf
+    targets are modulated by a low-frequency sine so the robot rhythmically flexes
+    and extends its legs (body rises and lowers), plus a tiny phase offset front vs
+    back for a natural look. Real mj_step physics throughout; the motion is a scripted
+    reference trajectory, not a trained policy. Returns mjData snapshots (copies).
 
-    base_ctrl: the position-control targets for the standing (home) pose. Full-range
-    random control makes a quadruped tip over immediately — that is physically
-    correct but looks like a broken ragdoll, so we perturb around the stable pose."""
+    base_ctrl: the standing (home) position-control targets. Go1 leg joints per leg
+    are [hip, thigh, calf]; extending a leg (thigh down, calf up) raises the body."""
     nu = model.nu
     lo, hi = model.actuator_ctrlrange[:, 0].copy(), model.actuator_ctrlrange[:, 1].copy()
     unlimited = lo >= hi
     lo = np.where(unlimited, -1.0, lo)
     hi = np.where(unlimited, 1.0, hi)
 
-    # Fixed small perturbation of ±0.10 rad (~6deg) per joint. NOT a fraction of
-    # ctrlrange: on Go1 the thigh range is hugely asymmetric ([-0.69, 4.5]), so a
-    # 10%-of-range perturbation would swing the thigh ~30deg and tip the robot over.
-    # A small fixed amplitude keeps all four legs visibly moving while upright.
-    amp = np.full(nu, 0.10)
+    A = 0.15                 # bob amplitude (rad) — modest, stays upright
+    period = 60.0            # frames per cycle (~2s at 30fps)
+    nlegs = nu // 3
 
-    delta = np.zeros(nu)
     snaps = []
-    for _ in range(num_steps):
-        target = rng.uniform(-amp, amp)
-        delta = ACTION_SMOOTH * delta + (1.0 - ACTION_SMOOTH) * target
-        data.ctrl[:] = np.clip(base_ctrl + delta, lo, hi)
+    for t in range(num_steps):
+        ctrl = base_ctrl.copy()
+        for leg in range(nlegs):
+            # small front/back phase offset so it looks alive, not a rigid squat
+            phase = 2.0 * np.pi * (t / period) + (0.0 if leg < 2 else np.pi * 0.25)
+            s = A * np.sin(phase)
+            thigh = 3 * leg + 1
+            calf = 3 * leg + 2
+            ctrl[thigh] = base_ctrl[thigh] - s          # thigh down -> extend
+            ctrl[calf] = base_ctrl[calf] + 2.0 * s      # calf up   -> extend, foot stays under
+        data.ctrl[:] = np.clip(ctrl, lo, hi)
         mujoco.mj_step(model, data)          # REAL dynamics integration
         snaps.append((data.qpos.copy(), data.xpos.copy()))
     return snaps
@@ -151,7 +156,7 @@ def _hud(img_arr, label, note=None):
     draw = ImageDraw.Draw(img)
     f = _font(15)
     view = {"side": "Side view", "front": "Front view", "3q": "3/4 view"}[label]
-    draw.text((10, 10), f"Unitree Go1 — standing pose + random perturbations, real MuJoCo physics — {view}",
+    draw.text((10, 10), f"Unitree Go1 — scripted bobbing gait, real MuJoCo physics — {view}",
               fill=(20, 20, 60), font=f)
     if note:
         draw.text((10, 32), note, fill=(120, 60, 60), font=f)
@@ -223,7 +228,7 @@ def main():
         data.ctrl[:] = base_ctrl
         mujoco.mj_step(model, data)
 
-    print(f"[demo] rolling out {NUM_STEPS} steps of REAL physics around the standing pose ...")
+    print(f"[demo] rolling out {NUM_STEPS} steps of REAL physics with a scripted bobbing gait ...")
     snaps = rollout_real_physics(model, data, NUM_STEPS, rng, base_ctrl)
 
     use_3d = True
@@ -244,7 +249,7 @@ def main():
         segs[label] = save_segment(frames, label)
 
     cards = {
-        "t0": title_card("Unitree Go1\nStanding pose + random perturbations\nReal MuJoCo physics · AMD Radeon", 4),
+        "t0": title_card("Unitree Go1\nScripted bobbing gait\nReal MuJoCo physics · AMD Radeon", 4),
         "t1": title_card("Side view", 2),
         "t2": title_card("Front view", 2),
         "t3": title_card("3/4 view", 2),
