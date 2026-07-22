@@ -223,10 +223,23 @@ def main():
     if base_ctrl is None:
         base_ctrl = data.qpos[7:7 + model.nu].copy()
 
-    # let the robot settle onto its feet for a moment before perturbing
-    for _ in range(30):
+    # Gravity-compensation feedforward. The actuators are pure P servos (kp=35, no
+    # gravity comp), so commanding the exact standing angles yields ~zero torque and
+    # the robot sags to a crouch. Fix: settle once, MEASURE the steady-state sag,
+    # then add it back to the target. Since torque = kp*(ctrl - q) is linear, one
+    # correction lands the equilibrium at the intended standing pose.
+    nu = model.nu
+    for _ in range(120):                       # settle at raw target -> sags
         data.ctrl[:] = base_ctrl
         mujoco.mj_step(model, data)
+    sag = base_ctrl - data.qpos[7:7 + nu]      # steady-state position error
+    base_ctrl = base_ctrl + sag                # feedforward: command extra extension
+    lo = model.actuator_ctrlrange[:, 0]; hi = model.actuator_ctrlrange[:, 1]
+    base_ctrl = np.clip(base_ctrl, lo, hi)
+    for _ in range(120):                       # re-settle at compensated target -> stands
+        data.ctrl[:] = base_ctrl
+        mujoco.mj_step(model, data)
+    print(f"[demo] gravity-comp done; trunk height now {float(data.qpos[2]):.3f} m (target ~0.278)")
 
     print(f"[demo] rolling out {NUM_STEPS} steps of REAL physics with a scripted bobbing gait ...")
     snaps = rollout_real_physics(model, data, NUM_STEPS, rng, base_ctrl)
