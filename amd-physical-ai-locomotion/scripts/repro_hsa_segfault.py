@@ -2,7 +2,7 @@
 
 Durable replacement for the throwaway /tmp/ppo_min.py used on the cloud
 instance (that file is lost on instance restart — this one is version
-controlled). See docs/HANDOFF.md section 5 for the root-cause analysis.
+controlled). See docs/ROCM_BUG_REPORT.md (Root Cause Analysis).
 
 What it does (the smallest thing that still crashes):
   1. Load the Playground Go1 joystick env with the JAX/XLA MJX backend.
@@ -22,7 +22,7 @@ Capture the stack:
         --args python3 scripts/repro_hsa_segfault.py 2>&1 | tail -60
 
 To see the crash turn into a (masked) Python error instead — evidence for
-the rocprofiler-interception finding in HANDOFF section 5:
+the rocprofiler-interception finding in docs/ROCM_BUG_REPORT.md:
     ROCP_TOOL_LIBRARIES= HSA_TOOLS_LIB= ROCPROFILER_DISABLE=1 \
         PYTHONPATH="$PWD" python3 scripts/repro_hsa_segfault.py
 """
@@ -49,7 +49,7 @@ def main() -> None:
     print(f"[repro] jax devices: {jax.devices()}")
 
     # Force the classic JAX/XLA MJX backend (Warp backend is unavailable on
-    # ROCm — see HANDOFF fix C).
+    # ROCm — see docs/ROCM_BUG_REPORT.md (Suggested Fix)).
     env_cfg = registry.get_default_config(ENV)
     if "impl" in env_cfg:
         with env_cfg.unlocked():

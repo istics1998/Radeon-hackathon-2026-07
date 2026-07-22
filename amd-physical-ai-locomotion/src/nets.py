@@ -12,7 +12,7 @@ sizes default to the reference ``(512, 256, 128)``.
 
 Deliberately self-contained (flax + jax only): it does NOT use brax's training
 networks, because brax's PPO runner is what segfaults on this gfx1100 +
-jax-rocm7 stack (see docs/HANDOFF.md). Everything here is pure ``jax.jit``-able
+jax-rocm7 stack (see docs/ROCM_BUG_REPORT.md). Everything here is pure ``jax.jit``-able
 math — no ``pmap``, no multi-device collectives — the path that avoids the
 HSA-layer crash.
 """

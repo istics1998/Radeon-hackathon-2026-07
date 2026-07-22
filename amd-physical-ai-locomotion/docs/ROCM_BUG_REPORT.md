@@ -170,6 +170,6 @@ intercepts kernel launch. Same code sometimes succeeds, sometimes crashes.
 
 ## Attachments
 
-- Full rocgdb transcript: see [`docs/HANDOFF.md`](HANDOFF.md) §9.3
+- Full rocgdb transcript: see the "rocgdb Stack Trace" section above
 - Minimal reproducer: [`scripts/repro_hsa_segfault.py`](../scripts/repro_hsa_segfault.py)
 - GPU stress test: [`scripts/gpu_stress.py`](../scripts/gpu_stress.py)

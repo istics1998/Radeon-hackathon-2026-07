@@ -1,5 +1,5 @@
 """GPU kernel-launch stress probe — the fast, dependency-light reproducer for
-the rocprofiler HSA-layer race (docs/HANDOFF.md §9.3).
+the rocprofiler HSA-layer race (see docs/ROCM_BUG_REPORT.md, rocgdb Stack Trace).
 
 Why this exists (separate from scripts/repro_hsa_segfault.py):
   * repro_hsa_segfault.py needs brax + mujoco_playground and runs a real PPO
@@ -99,7 +99,7 @@ def main() -> None:
     @jax.jit
     def deep_scan(mat: jnp.ndarray) -> jnp.ndarray:
         # A long lax.scan folds into a nested WhileThunk — the exact dispatch
-        # shape rocgdb caught crashing (HANDOFF §9.3). Each step launches
+        # shape rocgdb caught crashing (see docs/ROCM_BUG_REPORT.md). Each step launches
         # several kernels (matmul + elementwise), so the profiler intercepts
         # scan_len * k launches inside one dispatch.
         def body(carry, _):

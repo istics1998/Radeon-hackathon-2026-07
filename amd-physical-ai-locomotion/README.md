@@ -1,8 +1,8 @@
 # AMD Physical AI — Quadruped Locomotion RL on Radeon (ROCm)
+# AMD 物理 AI — 基于 Radeon (ROCm) 的四足机器狗运动控制强化学习
 
-> **Track 3 (Physical AI)** submission for the **AMD AI DevMaster Hackathon**.
->
-> **Track 3（物理 AI）**  ——  **AMD AI DevMaster 黑客松**参赛作品。
+Track 3 (Physical AI) submission for the AMD AI DevMaster Hackathon.
+赛道 3（物理 AI）— AMD AI DevMaster 黑客松参赛作品。
 
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![ROCm](https://img.shields.io/badge/ROCm-7.2.1-red)
@@ -10,41 +10,116 @@
 ![Python](https://img.shields.io/badge/Python-3.12-green)
 ![Platform](https://img.shields.io/badge/Platform-AMD%20Radeon%20gfx1100-orange)
 
-**🎥 [Demo Video on YouTube/Bilibili](https://github.com/istics1998/Radeon-hackathon-2026-07)** · [提交物文档](docs/HANDOFF.md) · [ROCm Bug 报告](docs/ROCM_BUG_REPORT.md)
+![demo preview](assets/preview.gif)
+
+🎥 [Demo Video on Bilibili / B 站演示视频](https://www.bilibili.com/video/BV1ATgC69Eqw/) · [ROCm Bug Report / Bug 报告](docs/ROCM_BUG_REPORT.md)
+
+Contents / 目录: [1. Overview / 项目简介](#1-overview--项目简介) · [2. Development / 开发过程](#2-development-process--challenges--开发过程与遇到的困难) · [3. Code Origin / 代码来源](#3-code-origin--contributions--代码来源与贡献) · [4. Team / 团队分工](#4-team--团队分工) · [5. Setup & Run / 安装与运行](#5-setup--run--安装与运行) · [6. Results / 运行结果](#6-results--运行结果) · [7. Demo / 演示视频](#7-demo-video--演示视频)
 
 ---
 
-## 1. 项目概述 / Project Overview
+## 1. Overview / 项目简介
 
-**中文**
+What this submission delivers: a working GPU physics-simulation and rendering pipeline for quadruped locomotion on an AMD Radeon GPU, plus a from-scratch single-GPU jit PPO implementation that is validated and correct. What it does not deliver: a fully trained walking policy — full training is blocked by a ROCm runtime bug (details in section 2), so the demo video is a random-policy rollout, not a trained policy.
 
-本项目的目标是使用强化学习（PPO）在 AMD Radeon GPU 上训练宇树 Go1 四足机器狗进行摇杆指令行走。
-整个管线完全跑在 GPU 上：仿真使用 MuJoCo Playground (MJX) 的 JAX 后端做 GPU 并行物理仿真，
-训练使用自写的轻量单卡 PPO（从零实现，不依赖 brax 训练器）。
+本作品实际交付的是：一套面向四足运动的 GPU 物理仿真+渲染管线，在 AMD Radeon GPU 上正常工作；以及一套从零实现、已验证正确的单卡 jit PPO。未能交付的是：完整训练出的行走策略——完整训练被一个 ROCm 运行时 bug 阻塞（详见第 2 节），因此演示视频是随机策略 rollout，而非训练出的策略。
 
-**Why AMD**: MJX run through the **XLA compiler via JAX**, which supports AMD
-GPUs natively — no CUDA-only dependency. This project demonstrates end-to-end
-**GPU-parallel physics simulation + RL training** on a single AMD Radeon GPU
-via ROCm, following the path documented in the
-[ROCm + JAX + MuJoCo blog](https://rocm.blogs.amd.com/artificial-intelligence/rocm-jax-mujoco/README.html).
+The intended goal was to train a Unitree Go1 quadruped to walk under joystick velocity commands (`Go1JoystickFlatTerrain`) using reinforcement learning (PPO) on an AMD Radeon GPU, with the whole pipeline on the GPU: physics simulated by the JAX backend of MuJoCo Playground (MJX) for GPU-parallel rollouts, and training by our own from-scratch PPO. That goal was not reached because of the ROCm bug below. What we could verify: `scripts/00_verify_rocm.sh` passes 6/6 and the GPU is live (`RocmDevice`); the Go1 environment loads and the PPO trainer compiles and dispatches kernels on the GPU (the run prints the device, the observation/action sizes, and the training plan). What we could not achieve: training segfaults inside the first `lax.scan` chunk before any checkpoint is written — so we have no trained policy and no reward curve.
 
-Key design decisions:
-- **From-scratch single-GPU jit PPO** (`src/train_jax_ppo.py`) — avoids brax's
-  `pmap`-based trainer which triggers a ROCm runtime segfault (see §5).
-- **Asymmetric actor-critic**: policy sees `state` (48-dim), value function sees
-  `privileged_state` (123-dim).
-- **Headless rendering** via OSMesa — works on server instances without a display.
+项目原定目标是用强化学习（PPO）在 AMD Radeon GPU 上训练宇树 Go1 四足机器狗按摇杆速度指令行走（`Go1JoystickFlatTerrain`），全程 GPU：仿真用 MuJoCo Playground (MJX) 的 JAX 后端做 GPU 并行物理仿真，训练用我们从零实现的 PPO。该目标因下述 ROCm bug 未能达成。我们能验证的是：`scripts/00_verify_rocm.sh` 通过 6/6、GPU 点亮（`RocmDevice`）；Go1 环境能加载，PPO 训练器能编译并在 GPU 上发射 kernel（运行会打印设备、观测/动作维度和训练计划）。未能达成的是：训练在第一个 `lax.scan` chunk 里就段错误，还没写出任何 checkpoint——因此我们没有训练好的策略，也没有 reward 曲线。
+
+Problem, approach, metrics, stack / 问题、方法、指标、技术栈:
+
+- Problem / 问题: velocity-command quadruped locomotion, a core Physical AI task. / 速度指令下的四足运动控制，Physical AI 的核心任务。
+- Approach / 方法: GPU-parallel MJX simulation with a from-scratch single-GPU jit PPO. / GPU 并行 MJX 仿真 + 从零实现的单卡 jit PPO。
+- Target metric (not obtained) / 目标指标（未测得）: the metric that would evaluate success is mean episode reward under commanded velocity (equivalently, velocity-tracking error). We could not measure it — training never reached convergence because of the ROCm bug. / 评价成功的指标本应是指令速度下的平均回合奖励（等价于速度跟踪误差）。因 ROCm bug 训练未收敛，该指标未能测得。
+- Measured signals (setup only, no performance) / 实测信号（仅环境，无性能）: `scripts/00_verify_rocm.sh` passes 6/6 and prints `RocmDevice`; the Go1 env loads and the PPO trainer compiles and dispatches on the GPU. Training then segfaults in the first `lax.scan` chunk, so no checkpoint, reward curve, or eval metric was produced. / `scripts/00_verify_rocm.sh` 通过 6/6 并打印 `RocmDevice`；Go1 环境能加载、PPO 训练器能在 GPU 上编译并发射。随后训练在第一个 `lax.scan` chunk 段错误，因此没有产出 checkpoint、reward 曲线或评估指标。
+- Stack / 技术栈: AMD Radeon gfx1100, ROCm 7.2.1, JAX 0.11, MuJoCo Playground (MJX), Flax, Optax, Python 3.12.
+
+Why AMD: MJX runs through the XLA compiler via JAX, which supports AMD GPUs natively with no CUDA-only dependency. This project shows end-to-end GPU-parallel physics simulation and RL training on a single AMD Radeon GPU via ROCm, following the path in the [ROCm + JAX + MuJoCo blog](https://rocm.blogs.amd.com/artificial-intelligence/rocm-jax-mujoco/README.html).
+
+为什么用 AMD：MJX 通过 JAX 的 XLA 编译器运行，原生支持 AMD GPU，无 CUDA 独占依赖。本项目在单张 AMD Radeon GPU 上通过 ROCm 演示了端到端的 GPU 并行物理仿真+强化学习训练，遵循 [ROCm + JAX + MuJoCo 官方博客](https://rocm.blogs.amd.com/artificial-intelligence/rocm-jax-mujoco/README.html)的路径。
 
 ---
 
-## 2. 环境配置 / Setup
+## 2. Development Process & Challenges / 开发过程与遇到的困难
 
-### Prerequisites / 前提条件
+Key decisions / 关键决策. We chose JAX + MJX because it is the only mature path to GPU-parallel physics that runs on AMD via XLA without CUDA. We wrote PPO from scratch (`jax.jit` + `lax.scan`, no `pmap`) rather than using brax's trainer, because the brax `pmap` / `device_put_replicated` path triggered a ROCm segfault early on.
 
-An AMD Radeon GPU instance with ROCm 7.x installed. Follow the
-[Radeon Cloud User Guide](https://github.com/AMD-DEV-CONTEST/Radeon-hackathon-2026-07/blob/main/Radeon-Cloud-User%20Guide/README.md).
+关键决策：选择 JAX + MJX，因为这是唯一成熟、能通过 XLA 在 AMD 上跑 GPU 并行物理且不依赖 CUDA 的路径。PPO 从零实现（`jax.jit` + `lax.scan`，不用 `pmap`），而非直接用 brax 训练器，因为 brax 的 `pmap` / `device_put_replicated` 路径早期就触发了 ROCm 段错误。
 
-### Option A — Docker (recommended)
+Ablation — trainer choice on ROCm / 消融对比：ROCm 上的训练器选型. Both trainers run the same PPO objective on the same MJX environment; the only difference is the execution path. This is what drove us off the brax trainer and onto a from-scratch single-GPU design. 两个训练器在同一 MJX 环境上跑相同的 PPO 目标，唯一区别是执行路径。这正是我们放弃 brax 训练器、转向自写单卡设计的原因。
+
+| Trainer / 训练器 | Execution path / 执行路径 | Result on gfx1100 / 在 gfx1100 上的结果 |
+|---|---|---|
+| Brax PPO (`src/train.py`) | `pmap` + `device_put_replicated` (multi-device replication) | Segfaults early in `libhsa-runtime64.so.1` — the replication path hits the profiler race almost immediately / 很快在 `libhsa-runtime64.so.1` 段错误，复制路径几乎立即触发 profiler 竞态 |
+| From-scratch jit PPO (`src/train_jax_ppo.py`) | `jax.jit` + `lax.scan`, single device, no `pmap` | Compiles and dispatches on the GPU; still segfaults in `libhsa-runtime64` (observed `EXIT=139` on our runs), but reaches further into execution than the `pmap` path before crashing / 能在 GPU 上编译并发射；仍会在 `libhsa-runtime64` 段错误（实测 `EXIT=139`），但比 `pmap` 路径崩得更晚 |
+
+The single-device `lax.scan` path avoids the `pmap` replication that triggers the crash fastest, which is why we default to it. It does not fully escape the underlying ROCm profiler bug — that is a runtime-layer issue, not a trainer-design one (section 2, "the difficulty we hit"). 单设备 `lax.scan` 路径避开了最快触发崩溃的 `pmap` 复制，因此设为默认；但它并未完全绕开底层 ROCm profiler bug——那是运行时层问题，非训练器设计问题（见本节"遇到的困难"）。
+
+The difficulty we hit / 遇到的困难. On a gfx1100 + ROCm 7.2.1 + JAX 0.11.0 stack, every training run segfaults inside `libhsa-runtime64.so.1`. The root cause, confirmed via `rocgdb` and `ldd`: `jax-rocm7-plugin` (`xla_rocm_plugin.so`) has `librocprofiler-sdk.so.1` as a static NEEDED dependency. This profiler intercepts every HIP kernel launch via GOTCHA hooks, and on gfx1100 that injection into HSA has a non-deterministic race condition causing random segfaults.
+
+遇到的困难：在 gfx1100 + ROCm 7.2.1 + JAX 0.11.0 环境下，每次训练都会在 `libhsa-runtime64.so.1` 内段错误。经 `rocgdb` 和 `ldd` 确认的根因：`jax-rocm7-plugin`（`xla_rocm_plugin.so`）静态链接了 `librocprofiler-sdk.so.1`。该分析器通过 GOTCHA 钩子拦截每次 GPU kernel 发射，在 gfx1100 上导致 HSA 层非确定性竞态段错误。
+
+We could not disable it: environment variables (`HSA_TOOLS_LIB=`, `ROCP_TOOL_LIB=`, `ROCPROFILER_DISABLE=1`) had no effect; XLA flags (`command_buffer`, `autotune_level=0`, …) had no effect; `patchelf --remove-needed` fails because the plugin needs the `rocprofiler_force_configure` symbol; and uninstalling `rocprofiler-sdk` destroys JAX GPU support irreversibly. Full reproduction steps, the rocgdb stack, and ldd evidence are in [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md).
+
+无法关闭它：环境变量（`HSA_TOOLS_LIB=`、`ROCP_TOOL_LIB=`、`ROCPROFILER_DISABLE=1`）无效；XLA flags（`command_buffer`、`autotune_level=0` 等）无效；`patchelf --remove-needed` 因插件需要 `rocprofiler_force_configure` 符号而失败；卸载 `rocprofiler-sdk` 会不可逆地破坏 JAX GPU 能力。完整复现步骤、rocgdb 栈和 ldd 证据见 [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md)。
+
+What is confirmed working: the MJX environment (`env.reset()` / `env.step()` / `jax.vmap`) all run on GPU; our PPO algorithm, observation structure, GAE, and PPO updates are validated (they run and produce finite, non-NaN reward/loss values); the from-scratch jit PPO avoids the brax crash path; and single-env rollouts run fine — the crash only appears under repeated, dispatch-heavy workloads.
+
+确认正常的部分：MJX 环境（`env.reset()` / `env.step()` / `jax.vmap`）在 GPU 上均正常；我们的 PPO 算法、观测结构、GAE、PPO 更新均验证正确并输出真实 reward/loss；从零实现的 jit PPO 规避了 brax 崩溃路径；单环境 rollout 正常——崩溃仅在重复、高频 dispatch 的负载下出现。
+
+Algorithm validation / 算法验证. On non-crashing runs the following short configs all reached `EXIT=0` with finite (non-NaN) reward/loss and saved checkpoints, which confirms the PPO implementation runs correctly — these are correctness checks (3–7 iterations), not converged training. 在未崩溃的轮次中，以下短配置均 `EXIT=0`，输出有限（非 NaN）reward/loss 并写入 checkpoint，说明 PPO 实现能正确运行——这是正确性验证（3–7 个 iteration），不是收敛训练。
+
+| Envs | Unroll | Iters | Result |
+|------|--------|-------|--------|
+| 256  | 10     | 7     | EXIT=0, checkpoint saved |
+| 512  | 10     | 5     | EXIT=0, checkpoint saved |
+| 1024 | 20     | 3     | EXIT=0, checkpoint saved |
+
+If we kept optimizing / 如果继续优化. File the upstream ROCm/JAX bug (a draft is ready in [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md)); once the profiler race is fixed or a patched plugin ships, run full training to convergence, add domain randomization, and attempt sim-to-real transfer.
+
+如果继续优化：向上游 ROCm/JAX 提交 bug（草稿已备好，见 [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md)）；待 profiler 竞态修复或发布修补版插件后，跑完整训练至收敛，加入域随机化，并尝试 sim-to-real 迁移。
+
+---
+
+## 3. Code Origin & Contributions / 代码来源与贡献
+
+The from-scratch PPO in `src/train_jax_ppo.py` and the networks in `src/nets.py` are fully original work by the team. The architecture references standard PPO (Schulman et al., 2017) and the MJX-Locomotion config from MuJoCo Playground. For MJX integration we use `mujoco_playground.registry` to create the environment and `mujoco_playground.wrapper.wrap_for_brax_training` for the Brax-compatible wrapper. The Brax PPO path in `src/train.py` is adapted from `brax.training.ppo.train` and kept only as a reference/comparison baseline. The render script is adapted from MuJoCo's rendering examples, and the Dockerfile is based on the `rocm/jax-community` community images.
+
+`src/train_jax_ppo.py` 里的 PPO 与 `src/nets.py` 里的网络为团队完全原创。架构参考标准 PPO（Schulman 等，2017）与 MuJoCo Playground 的 MJX-Locomotion 配置。MJX 集成用 `mujoco_playground.registry` 创建环境、`mujoco_playground.wrapper.wrap_for_brax_training` 做 Brax 兼容封装。`src/train.py` 的 Brax PPO 路径改编自 `brax.training.ppo.train`，仅作对照基线保留。渲染脚本改编自 MuJoCo 官方示例，Dockerfile 基于 `rocm/jax-community` 社区镜像。
+
+Third-party dependencies / 第三方依赖:
+
+| Library | License | Usage / 用途 |
+|---------|---------|-------|
+| JAX | Apache-2.0 | GPU compute / autograd |
+| MuJoCo / mujoco-mjx | Apache-2.0 | Physics simulation / 物理仿真 |
+| Brax | Apache-2.0 | PPO reference, env wrapper / PPO 参考、环境封装 |
+| MuJoCo Playground | Apache-2.0 | Locomotion environments / 运动环境 |
+| Flax | Apache-2.0 | Neural network definition / 网络定义 |
+| Optax | Apache-2.0 | Optimizer (Adam) / 优化器 |
+| MediaPy | Apache-2.0 | Video writing / 视频写出 |
+
+Upstream contribution / 上游贡献. We identified and documented a ROCm runtime bug: the profiler-sdk is statically linked into the XLA plugin, causing non-deterministic segfaults on gfx1100. A detailed report with reproduction steps, rocgdb stack trace, and ldd evidence is ready to file as a GitHub issue in [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md). The key insight — rocprofiler-sdk should be dynamically loaded, not statically linked — is directly actionable and would unblock JAX GPU training on affected configs.
+
+上游贡献：我们定位并整理了一个 ROCm 运行时 bug——profiler-sdk 被静态链接进 XLA 插件，在 gfx1100 上导致非确定性段错误。含复现步骤、rocgdb 栈、ldd 证据的完整报告已备好，可直接提交为 issue，见 [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md)。核心结论——rocprofiler-sdk 应动态加载而非静态链接——对 ROCm 团队直接可执行，可解锁受影响配置上的 JAX GPU 训练。
+
+---
+
+## 4. Team / 团队分工
+
+This project was built solo by istics1998, who did the PPO implementation, MJX integration, ROCm debugging, and all documentation. All decisions, code, debugging, and docs are the work of the sole member.
+
+本项目由 istics1998 独立完成，负责 PPO 实现、MJX 集成、ROCm 调试与全部文档。所有决策、代码、调试与文档均由该成员一人完成。
+
+---
+
+## 5. Setup & Run / 安装与运行
+
+Requirements / 环境要求: an AMD Radeon GPU instance with ROCm 7.x. Follow the [Radeon Cloud User Guide](https://github.com/AMD-DEV-CONTEST/Radeon-hackathon-2026-07/blob/main/Radeon-Cloud-User%20Guide/README.md). / 一台装有 ROCm 7.x 的 AMD Radeon GPU 实例，参考上方 Radeon 云用户指南。
+
+Option A — Docker (recommended) / 方式 A — Docker（推荐）:
 
 ```bash
 docker build --build-arg BASE_TAG=<rocm-version-tag> -t amd-locomotion .
@@ -55,268 +130,102 @@ docker run -it --rm \
   amd-locomotion bash scripts/00_verify_rocm.sh
 ```
 
-### Option B — Native pip
+Option B — native pip / 方式 B — 原生 pip:
 
 ```bash
-# 1. Install JAX ROCm build:
+# 1. Install JAX ROCm build / 安装 JAX 的 ROCm 版本
 pip install "jax[rocm7-local]" -f https://storage.googleapis.com/jax-releases/jax_rocm_releases.html
 
-# 2. Install dependencies (use official PyPI for mujoco_playground):
+# 2. Install dependencies / 安装依赖 (use official PyPI for mujoco_playground)
 pip install --break-system-packages -i https://pypi.org/simple playground
 pip install --break-system-packages mujoco mujoco-mjx "brax>=0.14.0" flax optax ml_collections etils mediapy tensorboardX tqdm
 
-# 3. Verify:
+# 3. Verify / 验证
 bash scripts/00_verify_rocm.sh
 ```
 
-### Choosing the right ROCm / JAX version / 选择正确的版本
+Choosing the right ROCm / JAX version / 选择正确的版本. Check the instance ROCm version with `cat /opt/rocm/.info/version`. 用 `cat /opt/rocm/.info/version` 查看实例 ROCm 版本。
 
-| ROCm | JAX extra | Notes |
+| ROCm | JAX extra | Notes / 说明 |
 |------|-----------|-------|
-| 7.2.x | `jax[rocm7-local]` | Tested on gfx1100 |
-| 6.x | `jax[rocm6-local]` | Not tested for this project |
+| 7.2.x | `jax[rocm7-local]` | Tested on gfx1100 / 已在 gfx1100 测试 |
+| 6.x | `jax[rocm6-local]` | Not tested for this project / 本项目未测试 |
 
-Check instance ROCm version:
-```bash
-cat /opt/rocm/.info/version
-```
-
----
-
-## 3. 运行结果 / Results
-
-### Repository layout / 仓库结构
-
-```
-scripts/00_verify_rocm.sh   # 验证环境 (先跑这个)
-scripts/01_train.sh         # 训练 (SMOKE=1 快速验证)
-scripts/02_eval.sh          # 闭环评估
-scripts/03_record_video.sh  # 渲染视频
-src/config.py               # 路径 + GPU 断言 + 无头渲染
-src/nets.py                 # Actor-Critic 网络 (Flax)
-src/train_jax_ppo.py        # 自写单卡 jit PPO (默认训练器)
-src/train.py                # Brax PPO (对照用)
-src/eval.py                 # 加载 checkpoint + 评估
-src/render.py               # 渲染 mp4
-docs/HANDOFF.md             # 完整交接文档 (含根因分析)
-docs/ROCM_BUG_REPORT.md     # ROCm bug 报告 (upstream issue 素材)
-scripts/repro_hsa_segfault.py  # 最小崩溃复现脚本
-```
-
-### Steps to reproduce / 复现步骤
+Run commands / 运行命令:
 
 ```bash
-# 0. Verify AMD GPU (must print RocmDevice)
+# 0. Verify AMD GPU (must print RocmDevice) / 验证 AMD GPU（须打印 RocmDevice）
 bash scripts/00_verify_rocm.sh
 
-# 1. Smoke test (200k steps, ~minutes)
+# 1. Smoke test — starts training, then hits the ROCm segfault / 冒烟测试（会触发段错误）
 SMOKE=1 bash scripts/01_train.sh
 
-# 2. Full training
+# 2. Full training — blocked by the ROCm profiler race (section 2) / 完整训练（被 ROCm 竞态阻塞）
 bash scripts/01_train.sh
 
-# 3. Eval
-bash scripts/02_eval.sh
-
-# 4. Render demo video
-bash scripts/03_record_video.sh
+# 3. Reproduce the demo video (random policy, no checkpoint needed) / 复现演示视频（随机策略，无需 checkpoint）
+python3 scripts/make_demo_video_full.py
 ```
 
-### Expected results (if training were stable) / 预期结果
+How to verify / 验证方式. Step 0 is the reliable, reproducible check: it prints `RocmDevice` and passes 6/6, confirming the GPU and JAX ROCm stack are live. Steps 1–2 launch our PPO training and will hit the ROCm profiler segfault on gfx1100 (section 2) — that is the expected, documented failure, not a setup error. Step 3 reproduces the demo video from a random-policy rollout and needs no trained checkpoint.
 
-- `00_verify_rocm.sh`: 6/6 checks pass, `RocmDevice` printed.
-- Training: reward rises over iterations, checkpoint saved.
-- Eval: positive mean episode reward, robot stays upright.
-- Video: mp4 of Go1 walking under commanded velocity.
+验证方式：第 0 步是稳定可复现的检查——打印 `RocmDevice` 并通过 6/6，确认 GPU 与 JAX ROCm 栈可用。第 1–2 步启动我们的 PPO 训练，会在 gfx1100 上触发 ROCm profiler 段错误（见第 2 节）——这是预期内、已记录的失败，不是环境配置错误。第 3 步用随机策略 rollout 复现演示视频，无需训练好的 checkpoint。
 
-**当前状态**: smoke 训练确认段错误（见 §5 困难说明）。
+Note: `scripts/02_eval.sh` (closed-loop eval) and `scripts/03_record_video.sh` (MuJoCo-renderer video) both require a trained checkpoint, which full training cannot produce because of the ROCm bug — so they are not part of the reproducible path above. The committed demo was made by `scripts/make_demo_video_full.py`.
 
----
-
-## 4. 开发过程与遇到的困难 / Development Process & Challenges
-
-### The Problem
-
-During development on a gfx1100 + ROCm 7.2.1 + JAX 0.11.0 stack, we discovered
-that **every training run segfaults** inside `libhsa-runtime64.so.1`.
-
-### Root Cause (confirmed via rocgdb + ldd)
-
-The `jax-rocm7-plugin` (`xla_rocm_plugin.so`) has `librocprofiler-sdk.so.1` as a
-**static NEEDED dependency** (visible in `ldd`). This profiler intercepts **every
-HIP kernel launch** via GOTCHA hooks. On gfx1100, the profiler injection into
-HSA has a **non-deterministic race condition** causing random segfaults.
-
-Disabling it is impossible:
-- Environment variables (`HSA_TOOLS_LIB=`, `ROCP_TOOL_LIB=`, `ROCPROFILER_DISABLE=1`) ❌
-- XLA flags (`command_buffer`, `autotune_level=0`, etc.) ❌
-- `patchelf --remove-needed` — plugin needs `rocprofiler_force_configure` symbol ❌
-- Uninstalling `rocprofiler-sdk` — destroys JAX GPU irreversibly ❌
-
-**Full evidence in **: [`docs/HANDOFF.md`](docs/HANDOFF.md) §5/§9.3 (rocgdb stack),
-[`docs/ROCM_BUG_REPORT.md`](docs/ROCM_BUG_REPORT.md) (upstream bug report with
-all reproduction steps).
-
-### What's NOT the problem (confirmed working)
-
-- **MuJoCo Playground environment**: `env.reset()` / `env.step()` / `jax.vmap`
-  all work correctly on GPU ✅
-- **Our PPO implementation**: algorithm, obs structure, GAE, PPO updates all
-  validated — multiple runs produced real reward/loss values ✅
-- **From-scratch jit PPO avoids brax crash path**: we use `jax.jit` + `lax.scan`,
-  no `pmap`, no `device_put_replicated` ✅
-- **Single env rollouts**: work fine, crash only appears under repeated
-  dispatch-heavy workloads
-
-### 根本原因（中文简述）
-
-`jax-rocm7-plugin` 静态链接了 `librocprofiler-sdk.so.1`（性能分析器），
-该 profiler 自动拦截每次 GPU kernel 发射，在 gfx1100 上导致 HSA 层非确定性竞态段错误。
-该依赖不可用环境变量关闭，不可用 patchelf 摘除，不可卸载（会破坏 JAX GPU 能力）。
-
-**我们已将所有证据（rocgdb 栈、ldd 输出、已试无效手段）整理为 ROCm 上游 bug 报告**：
-[`docs/ROCM_BUG_REPORT.md`](docs/ROCM_BUG_REPORT.md)。
-
-### 已完成的算法验证 / Algorithm Validation
-
-我们自写的单卡 jit PPO 算法已确认正确——在竞态"运气好"的轮次中，以下配置均 `EXIT=0`，
-输出了真实 reward / loss 数值并写入了 checkpoint：
-
-| Envs | Unroll | Iters | Result |
-|------|--------|-------|--------|
-| 256 | 10 | 7 | ✅ EXIT=0, checkpoint saved |
-| 512 | 10 | 5 | ✅ EXIT=0, checkpoint saved |
-| 1024 | 20 | 3 | ✅ EXIT=0, checkpoint saved |
-
-训练流水线骨架、网络定义、evaluator 和渲染脚本均已实现且验证通过。
+说明：`scripts/02_eval.sh`（闭环评估）与 `scripts/03_record_video.sh`（MuJoCo 渲染器出视频）都需要训练好的 checkpoint，而完整训练因 ROCm bug 无法产出，故不在上面的可复现流程内。提交的演示视频由 `scripts/make_demo_video_full.py` 生成。
 
 ---
 
-## 5. 代码来源与贡献 / Code Origin & Team Contributions
+## 6. Results / 运行结果
 
-### Code origin
+Repository layout / 仓库结构:
 
-- **From-scratch PPO** (`src/train_jax_ppo.py`, `src/nets.py`): fully original
-  implementation by our team. Architecture references standard PPO notations
-  (Schulman et al., 2017) and the MJX-Locomotion config from MuJoCo Playground.
-- **MuJoCo Playground integration**: uses `mujoco_playground.registry` for
-  environment creation and `mujoco_playground.wrapper.wrap_for_brax_training`
-  for Brax-compatible env wrapper.
-- **Brax PPO path** (`src/train.py`): adapted from Brax's `brax.training.ppo.train`.
-- **Render script**: adapted from MuJoCo's rendering examples.
-- **Dockerfile**: based on `rocm/jax-community` community images.
+```
+scripts/00_verify_rocm.sh        # Verify environment / 验证环境 (run first / 先跑这个)
+scripts/01_train.sh              # Train / 训练 (SMOKE=1 for quick test / 快速验证)
+scripts/make_demo_video_full.py  # Demo video: random policy, matplotlib, multi-view / 演示视频（随机策略）
+scripts/repro_hsa_segfault.py    # Minimal crash reproduction / 最小崩溃复现脚本
+scripts/02_eval.sh               # Closed-loop eval (needs a trained checkpoint) / 闭环评估（需 checkpoint）
+scripts/03_record_video.sh       # MuJoCo-renderer video (needs a checkpoint) / MuJoCo 渲染器视频（需 checkpoint）
+src/config.py                    # Paths + GPU assert + headless render / 路径+GPU断言+无头渲染
+src/nets.py                      # Actor-Critic network (Flax) / 网络定义
+src/train_jax_ppo.py             # From-scratch single-GPU jit PPO / 自写单卡 PPO (default / 默认)
+src/train.py                     # Brax PPO (reference / 对照用)
+src/eval.py                      # Load checkpoint + evaluate (inference) / 加载 checkpoint 评估（推理）
+src/render.py                    # Render rollout to mp4 / 渲染 rollout 视频
+docs/ROCM_BUG_REPORT.md          # ROCm bug report (upstream issue material) / bug 报告素材
+```
 
-### Third-party dependencies
+There is no `data/` directory or dataset generation script: the environments come directly from MuJoCo Playground's registry, so there is no custom dataset to build or download. Inference is implemented in `src/eval.py` (loads a checkpoint and runs a closed-loop rollout) and `src/render.py` (renders a rollout to mp4) — both need a trained checkpoint, which the ROCm bug prevented us from producing, so the committed demo instead uses `scripts/make_demo_video_full.py` (a random policy, so no checkpoint is required).
 
-| Library | License | Usage |
-|---------|---------|-------|
-| JAX | Apache-2.0 | GPU compute / autograd |
-| MuJoCo / mujoco-mjx | Apache-2.0 | Physics simulation |
-| Brax | Apache-2.0 | PPO reference, env wrapper |
-| MuJoCo Playground | Apache-2.0 | Locomotion environments |
-| Flax | Apache-2.0 | Neural network definition |
-| Optax | Apache-2.0 | Optimizer (Adam) |
-| MediaPy | Apache-2.0 | Video writing |
+没有 `data/` 目录或数据生成脚本：环境直接来自 MuJoCo Playground 的 registry，因此没有自制数据集需要构建或下载。推理逻辑在 `src/eval.py`（加载 checkpoint 跑闭环 rollout）和 `src/render.py`（渲染 rollout 成 mp4）里——两者都需要训练好的 checkpoint，而 ROCm bug 使我们无法产出，故提交的演示改用 `scripts/make_demo_video_full.py`（随机策略，无需 checkpoint）。
 
-### Team
+Actual results / 实际结果. `00_verify_rocm.sh` passes 6/6 checks and prints `RocmDevice`. The PPO algorithm is validated — it runs and produces finite (non-NaN) reward/loss with a saved checkpoint on non-crashing runs (`EXIT=0`, see the table in section 2); these are short correctness checks, not converged training. The GPU simulation and render pipeline works, and the demo video is rendered from a random-policy rollout. Full stable training is blocked by the ROCm profiler race (section 2).
 
-| 成员 | 角色 | 贡献 |
-|------|------|------|
-| istics1998 | Development | PPO implementation, environment integration, debugging, documentation |
+实际结果：`00_verify_rocm.sh` 通过 6/6 检查并打印 `RocmDevice`。PPO 算法已验证——在未崩溃轮次输出真实 reward/loss 并保存 checkpoint（`EXIT=0`，见第 2 节表）。GPU 仿真+渲染管线正常，演示视频由随机策略 rollout 渲染。完整稳定训练受 ROCm profiler 竞态阻塞（第 2 节）。
 
-### LICENSE
-
-This project is licensed under the **MIT License** — see [LICENSE](LICENSE).
-
----
-
-## 6. 上游贡献 / Upstream OSS Contribution
-
-We have identified and documented a **ROCm runtime bug** affecting the
-`jax-rocm7-plugin`: the profiler-sdk is statically linked into the XLA plugin,
-causing non-deterministic segfaults on gfx1100. A detailed bug report with
-reproduction steps, rocgdb stack trace, and ldd evidence is available in:
-
-- [`docs/ROCM_BUG_REPORT.md`](docs/ROCM_BUG_REPORT.md) — ready to file as a
-  GitHub issue to the [ROCm](https://github.com/ROCm) or
-  [JAX](https://github.com/jax-ml/jax) repositories.
-
-The key insight — **rocprofiler-sdk should be dynamically loaded, not statically
-linked** — is directly actionable by the ROCm team and would unblock all
-JAX-based GPU training on affected configurations.
+Target results, once the ROCm bug is fixed / 目标结果，ROCm bug 修复后: training reward rises over iterations; eval shows positive mean episode reward with the robot upright; the video shows Go1 walking under commanded velocity. / 训练奖励随迭代上升；评估平均回合奖励为正且机器狗保持直立；视频展示 Go1 按指令速度行走。
 
 ---
 
 ## 7. Demo Video / 演示视频
 
-由于训练被 ROCm profiler 竞态阻塞，演示视频使用 `Go1JoystickFlatTerrain` 环境的
-**随机策略**渲染，展示 MuJoCo Playground 仿真+渲染管线在 AMD Radeon GPU 上的正常工作。
+Watch on Bilibili: [https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/). Local backup: [assets/demo_full2.mp4](assets/demo_full2.mp4).
 
-> Because full training is blocked by the ROCm profiler race condition (see §4),
-> the demo video uses a **random-policy rollout** on `Go1JoystickFlatTerrain` to
-> demonstrate that the GPU physics simulation + OSMEsa rendering pipeline works
-> correctly on AMD Radeon.
+B 站观看：[https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/)。本地备份：[assets/demo_full2.mp4](assets/demo_full2.mp4)。
 
-**Demo**: [`outputs/demo.mp4`](outputs/demo.mp4) (random policy, 100 frames, ~3s).
+Because full training is blocked by the ROCm profiler race (section 2), the demo is a random-policy rollout on `Go1JoystickFlatTerrain`, shown to demonstrate that the GPU physics simulation and rendering pipeline work correctly on AMD Radeon. It is not a trained walking policy.
 
-### How to regenerate / 如何重新生成
+由于完整训练被 ROCm profiler 竞态阻塞（第 2 节），演示视频使用 `Go1JoystickFlatTerrain` 环境的随机策略 rollout，用于展示 GPU 物理仿真+渲染管线在 AMD Radeon 上正常工作，并非训练出的行走策略。
 
-> ⚠️ MuJoCo Renderer(OSMesa/EGL/glfw)在 Python 3.12 + MuJoCo 3.10 上不可用，改用 matplotlib 3D 渲染。
+Note on rendering: MuJoCo's Renderer (OSMesa/EGL/glfw) is unavailable on Python 3.12 + MuJoCo 3.10, so the demo falls back to matplotlib 3D rendering.
 
-```bash
-cd /workspace/Radeon-hackathon-2026-07/amd-physical-ai-locomotion
-apt-get install -y ffmpeg
-python3 << 'PYEOF'
-import matplotlib; matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import mediapy as media, numpy as np, mujoco
-from mujoco_playground import registry as reg
-
-cfg = reg.get_default_config("Go1JoystickFlatTerrain")
-cfg.impl = "jax"
-env = reg.load("Go1JoystickFlatTerrain", config=cfg)
-model = env.mj_model
-data = mujoco.MjData(model)
-mujoco.mj_forward(model, data)
-
-frames = []
-for i in range(100):
-    data.ctrl[:] = np.random.uniform(-1, 1, 12)
-    mujoco.mj_step(model, data)
-    fig, ax = plt.subplots(figsize=(6.4,4.8), subplot_kw={'projection':'3d'})
-    xpos = data.xpos
-    ax.scatter(xpos[:,0], xpos[:,1], xpos[:,2], c='blue', s=20)
-    for j in range(model.nbody):
-        p = model.body_parentid[j]
-        ax.plot([xpos[j,0],xpos[p,0]],[xpos[j,1],xpos[p,1]],[xpos[j,2],xpos[p,2]],'k-',lw=1)
-    ax.set_xlim(-1,1); ax.set_ylim(-1,1); ax.set_zlim(0,1)
-    fig.canvas.draw()
-    w, h = fig.canvas.get_width_height()
-    img = np.frombuffer(fig.canvas.tostring_argb(), dtype='uint8').reshape((h, w, 4))[:,:,1:]
-    frames.append(img); plt.close(fig)
-
-media.write_video("outputs/demo.mp4", np.stack(frames), fps=30)
-print(f"✅ outputs/demo.mp4 ({len(frames)} frames)")
-PYEOF
-```
+渲染说明：MuJoCo 的 Renderer（OSMesa/EGL/glfw）在 Python 3.12 + MuJoCo 3.10 上不可用，演示改用 matplotlib 3D 渲染。
 
 ---
 
-## Project Status Summary / 项目状态总结
+## License / 许可证
 
-| Deliverable | Status |
-|-------------|--------|
-| GPU MJX Simulation Demo (random policy) | ✅ Script ready, needs cloud instance to render |
-| Training Pipeline + Algorithm Validation | ✅ Implemented & verified (EXIT=0 achieved on lucky runs) |
-| ROCm Bug Report (upstream issue) | ✅ Draft in `docs/ROCM_BUG_REPORT.md` |
-| README / Documentation | ✅ This file |
-| LICENSE | ✅ MIT |
-| Full Training (stable, non-crashing) | ❌ **Blocked by ROCm profiler race condition** — see §4 and [`docs/ROCM_BUG_REPORT.md`](docs/ROCM_BUG_REPORT.md) |
+MIT License — see [LICENSE](LICENSE). / MIT 许可证，详见 [LICENSE](LICENSE)。
 
-> **Note**: The training pipeline is complete and algorithm-verified — the
-> remaining blocker is entirely in the ROCm runtime layer and is not related to
-> our code. Per the track FAQ, simulation-only results and documentation of the
-> issue are acceptable for submission.
->
-> **注意**: 训练管线已全部实现且算法验证正确，剩余阻塞完全来自 ROCm 运行时层的竞态 bug，
-> 非我方代码问题。按赛道 FAQ，纯仿真结果 + 问题说明可作为有效提交。

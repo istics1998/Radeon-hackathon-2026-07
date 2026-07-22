@@ -2,7 +2,7 @@
 
 Why this exists: brax's stock PPO trainer segfaults in ``libhsa-runtime64``
 on this gfx1100 + jax-rocm7 stack — its pmap-over-scan training step hits a
-ROCm runtime bug (see docs/HANDOFF.md section 5). This trainer reproduces the
+ROCm runtime bug (see docs/ROCM_BUG_REPORT.md (Root Cause Analysis)). This trainer reproduces the
 same PPO algorithm using ONLY ``jax.jit`` on a single device: no ``pmap``, no
 cross-device collectives, no ``device_put_replicated``. That is precisely the
 code path proven to run on this GPU (env reset/step/vmap are known-good), so
@@ -21,7 +21,7 @@ Example:
 
 NOTE: authored on a machine without a GPU/JAX (network-restricted), so it is
 validated by byte-compile + careful review only. Run it on the Radeon instance
-with SMOKE first; iterate there. See docs/HANDOFF.md.
+with SMOKE first; iterate there. See docs/ROCM_BUG_REPORT.md.
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
                         "one compiled dispatch; a checkpoint is saved after every "
                         "chunk so training resumes across the ROCm HSA segfault. "
                         "Keep small enough that one dispatch stays in the stable "
-                        "region for the chosen --num-envs (see docs/HANDOFF.md).")
+                        "region for the chosen --num-envs (see docs/ROCM_BUG_REPORT.md).")
     p.add_argument("--resume", action="store_true",
                    help="Resume from the latest checkpoint for this env/seed if "
                         "present, continuing the step count and metrics log.")
@@ -256,7 +256,7 @@ def _make_train_fn(env, model, optimizer, args, iters_per_chunk):
     rocprofiler-sdk statically linked into xla_rocm_plugin, and forwarding into
     HSA hits a nondeterministic segfault whose probability grows with both the
     size of a single dispatch (total while-loop iterations) AND the number of
-    dispatches (see docs/HANDOFF.md). Neither a giant single scan (crashes at
+    dispatches (see docs/ROCM_BUG_REPORT.md). Neither a giant single scan (crashes at
     1024+ envs) nor a long Python re-dispatch loop is safe on its own.
 
     The chunk is the compromise: fold ``iters_per_chunk`` iters into one scan so

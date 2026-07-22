@@ -5,7 +5,7 @@
 #
 # Uses our from-scratch single-GPU jit PPO (src/train_jax_ppo.py), NOT brax's
 # PPO runner — the latter segfaults in libhsa-runtime64 on this gfx1100/ROCm
-# stack (see docs/HANDOFF.md section 5). Set TRAINER=brax to use the old path.
+# stack (see docs/ROCM_BUG_REPORT.md (Root Cause Analysis)). Set TRAINER=brax to use the old path.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,7 +18,7 @@ TRAINER="${TRAINER:-jax}"   # jax = our single-GPU PPO; brax = original brax run
 
 # NOTE (2026-07-17): the rocprofiler HSA segfault is a NON-DETERMINISTIC race,
 # not a size threshold — no NUM_ENVS/ITERS_PER_CHUNK is "proven stable". 512/4
-# and even 256/1 crashed before the first checkpoint (docs/HANDOFF.md §9.4).
+# and even 256/1 crashed before the first checkpoint (see docs/ROCM_BUG_REPORT.md).
 # These defaults are only a starting point; the real fix is a profiler-free
 # xla_rocm plugin (§9.7 path A), NOT tuning these numbers.
 NUM_ENVS="${NUM_ENVS:-512}"

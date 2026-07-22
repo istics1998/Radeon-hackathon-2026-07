@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Path A · Make the xla_rocm plugin profiler-free  (docs/HANDOFF.md §9.7 path A)
+# Path A · Make the xla_rocm plugin profiler-free  (see docs/ROCM_BUG_REPORT.md, Suggested Fix)
 # =============================================================================
-# ROOT CAUSE (HANDOFF §9.3): the active xla_rocm plugin has a *dynamic NEEDED*
+# ROOT CAUSE (see docs/ROCM_BUG_REPORT.md): the active xla_rocm plugin has a *dynamic NEEDED*
 # dependency on librocprofiler-sdk.so.1. Because that lib exports
 # `rocprofiler_configure`, the ROCm runtime AUTO-REGISTERS it as a profiling
 # tool the instant the plugin loads — by design this ignores env vars
@@ -199,7 +199,7 @@ else
   echo "   rocprofiler symbols at runtime. Auto-reverting..."
   cp -f "$BAK" "$PLUGIN_SO"
   echo "   restored original plugin. Path A (patchelf) not viable on this build;"
-  echo "   fall back to HANDOFF §9.7 path B (remove rocprofiler-sdk pkg) or path C."
+  echo "   fall back to removing the rocprofiler-sdk package, or the runtime workaround."
   exit 4
 fi
 
@@ -229,7 +229,7 @@ if [ "$FREE_CRASHES" -eq 0 ] && [ "$FREE_SURV" -eq "$TRIALS" ]; then
   echo "      bash scripts/01_train.sh                # full run"
   echo "  To undo:  REVERT=1 bash scripts/pathA_profiler_free.sh"
   echo ""
-  echo "  If confirmed, UPDATE docs/HANDOFF.md §9.7 + memory: path A works via"
+  echo "  If confirmed, record that this profiler-free approach works via"
   echo "  patchelf --remove-needed $LIB on $PLUGIN_SO."
   exit 0
 elif [ "$FREE_CRASHES" -lt "$BASE_CRASHES" ]; then
@@ -242,7 +242,7 @@ else
   echo "✗ NO IMPROVEMENT. Removing the rocprofiler NEEDED dep did not reduce crashes"
   echo "   (free=$FREE_CRASHES vs base=$BASE_CRASHES). Either the interception loads via a"
   echo "   different path (libamdhip64 pulling rocprofiler-register directly), or the"
-  echo "   crash isn't rocprofiler after all. Next: HANDOFF §9.7 path B, then path C."
+  echo "   crash isn't rocprofiler after all. Next: try removing the rocprofiler-sdk package, then the runtime workaround."
   [ -n "${FIRST_CRASH_TAIL:-}" ] && { echo "   crash tail:"; printf '%s\n' "$FIRST_CRASH_TAIL" | sed 's/^/       /'; }
   echo ""
   echo "   (The patched plugin is left in place; REVERT=1 to restore if you prefer."
