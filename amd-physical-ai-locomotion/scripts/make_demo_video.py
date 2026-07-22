@@ -98,7 +98,7 @@ def find_legs(model):
 
 def draw_hud(draw, step, total):
     """Draw info overlay."""
-    txt = f"step {step}/{total}"
+    txt = f"step {step}/{total}" if step <= 30 else f"step {step}/{total}  standing"
     # PIL default font is small but works
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
@@ -125,8 +125,11 @@ def main():
     model = env.mj_model
 
     data = mujoco.MjData(model)
-    # 把机器人抬高 0.4m, 让它从空中落下
-    data.qpos[2] = 0.7
+    # 用 key[0] 的稳定站立姿态初始化
+    mujoco.mj_resetDataKeyframe(model, data, 0)
+    # 抬高机器人展示"入场"效果
+    key_ctrl = data.qpos[7:19].copy()
+    data.qpos[2] = 0.65  # 从 65cm 高空开始
     mujoco.mj_forward(model, data)
     legs = find_legs(model)
     leg_colors = [(200, 40, 40), (40, 80, 200), (40, 180, 80), (220, 130, 40)]
@@ -134,12 +137,15 @@ def main():
     print(f"[make_demo_video] Bodies: {model.nbody}, Legs: {len(legs)}")
 
     frames = []
+    standing_frame = 0
     for i in range(num_frames):
-        # 全部 100 帧: 0 动作
-        # 让物理自然落地并保持站立姿态
-        data.ctrl[:] = 0.0
+        # 用 keyframe 的 qpos 作为 ctrl 目标来保持站立
+        data.ctrl[:] = key_ctrl
         mujoco.mj_step(model, data)
         xpos = data.xpos
+        # 检测是否落地站稳(torso 高度稳定在 0.28 附近)
+        if data.xpos[1, 2] < 0.4 and standing_frame == 0:
+            standing_frame = i
 
         img = Image.new("RGB", (W, H), (250, 250, 252))
         draw = ImageDraw.Draw(img)
