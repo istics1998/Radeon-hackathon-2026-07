@@ -73,8 +73,11 @@ def rollout_real_physics(model, data, num_steps, rng, base_ctrl):
     lo = np.where(unlimited, -1.0, lo)
     hi = np.where(unlimited, 1.0, hi)
 
-    # perturbation amplitude: a small fraction of each joint's range (min 0.05 rad)
-    amp = np.maximum(0.10 * (hi - lo), 0.05)
+    # Fixed small perturbation of ±0.10 rad (~6deg) per joint. NOT a fraction of
+    # ctrlrange: on Go1 the thigh range is hugely asymmetric ([-0.69, 4.5]), so a
+    # 10%-of-range perturbation would swing the thigh ~30deg and tip the robot over.
+    # A small fixed amplitude keeps all four legs visibly moving while upright.
+    amp = np.full(nu, 0.10)
 
     delta = np.zeros(nu)
     snaps = []
