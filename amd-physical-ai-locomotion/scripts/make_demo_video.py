@@ -127,9 +127,9 @@ def main():
     data = mujoco.MjData(model)
     # 用 key[0] 的稳定站立姿态初始化
     mujoco.mj_resetDataKeyframe(model, data, 0)
-    # 抬高机器人展示"入场"效果
+    # 抬高机器人从空中落下 (1.0m 高)
     key_ctrl = data.qpos[7:19].copy()
-    data.qpos[2] = 0.65  # 从 65cm 高空开始
+    data.qpos[2] = 1.0  # 从 1.0m 高空开始
     mujoco.mj_forward(model, data)
     legs = find_legs(model)
     leg_colors = [(200, 40, 40), (40, 80, 200), (40, 180, 80), (220, 130, 40)]
