@@ -59,22 +59,29 @@ def _font(size):
         return ImageFont.load_default()
 
 
-def rollout_real_physics(model, data, num_steps, rng):
-    """Step TRUE MuJoCo dynamics under smoothed random control. Returns a list of
-    mjData snapshots (copies) so we can render them afterwards from any camera."""
+def rollout_real_physics(model, data, num_steps, rng, base_ctrl):
+    """Step TRUE MuJoCo dynamics while holding the standing pose and adding small
+    smoothed random perturbations around it, so the robot stays upright and just
+    shifts/steps gently instead of flailing. Returns mjData snapshots (copies).
+
+    base_ctrl: the position-control targets for the standing (home) pose. Full-range
+    random control makes a quadruped tip over immediately — that is physically
+    correct but looks like a broken ragdoll, so we perturb around the stable pose."""
     nu = model.nu
-    lo, hi = model.actuator_ctrlrange[:, 0], model.actuator_ctrlrange[:, 1]
-    # guard against unlimited actuators (ctrlrange 0,0)
+    lo, hi = model.actuator_ctrlrange[:, 0].copy(), model.actuator_ctrlrange[:, 1].copy()
     unlimited = lo >= hi
     lo = np.where(unlimited, -1.0, lo)
     hi = np.where(unlimited, 1.0, hi)
 
-    act = np.zeros(nu)
+    # perturbation amplitude: a small fraction of each joint's range (min 0.05 rad)
+    amp = np.maximum(0.10 * (hi - lo), 0.05)
+
+    delta = np.zeros(nu)
     snaps = []
     for _ in range(num_steps):
-        target = rng.uniform(lo, hi)
-        act = ACTION_SMOOTH * act + (1.0 - ACTION_SMOOTH) * target
-        data.ctrl[:] = act
+        target = rng.uniform(-amp, amp)
+        delta = ACTION_SMOOTH * delta + (1.0 - ACTION_SMOOTH) * target
+        data.ctrl[:] = np.clip(base_ctrl + delta, lo, hi)
         mujoco.mj_step(model, data)          # REAL dynamics integration
         snaps.append((data.qpos.copy(), data.xpos.copy()))
     return snaps
@@ -141,7 +148,7 @@ def _hud(img_arr, label, note=None):
     draw = ImageDraw.Draw(img)
     f = _font(15)
     view = {"side": "Side view", "front": "Front view", "3q": "3/4 view"}[label]
-    draw.text((10, 10), f"Unitree Go1 — random policy, real MuJoCo physics — {view}",
+    draw.text((10, 10), f"Unitree Go1 — standing pose + random perturbations, real MuJoCo physics — {view}",
               fill=(20, 20, 60), font=f)
     if note:
         draw.text((10, 32), note, fill=(120, 60, 60), font=f)
@@ -182,17 +189,39 @@ def main():
     env = reg.load("Go1JoystickFlatTerrain", config=cfg)
     model = env.mj_model
 
-    # Reasonable standing start pose, then let real physics take over.
+    # Standing start pose from the model's home keyframe (correct crouch + height),
+    # then let real physics take over.
     data = mujoco.MjData(model)
     if model.nkey > 0:
-        mujoco.mj_resetDataKeyframe(model, data, 0)
+        mujoco.mj_resetDataKeyframe(model, data, 0)   # home keyframe = proper stance
     else:
-        data.qpos[0:3] = [0, 0, 0.30]
+        # fallback stance: trunk at standing height, legs in a bent crouch
+        data.qpos[0:3] = [0, 0, 0.28]
         data.qpos[3:7] = [1, 0, 0, 0]
+        # hip=0, thigh~0.9, calf~-1.8 per leg (typical Go1 stand)
+        for leg in range(4):
+            data.qpos[7 + leg * 3: 7 + leg * 3 + 3] = [0.0, 0.9, -1.8]
     mujoco.mj_forward(model, data)
 
-    print(f"[demo] rolling out {NUM_STEPS} steps of REAL physics under random control ...")
-    snaps = rollout_real_physics(model, data, NUM_STEPS, rng)
+    # base control = the standing joint targets. Prefer the home keyframe's ctrl;
+    # if that is absent/all-zero, fall back to the standing joint angles (qpos).
+    # (A zero base_ctrl would straighten the legs and make the robot collapse.)
+    base_ctrl = None
+    if model.nkey > 0 and getattr(model, "key_ctrl", None) is not None \
+            and model.key_ctrl.shape[1] == model.nu:
+        kc = model.key_ctrl[0].copy()
+        if np.any(np.abs(kc) > 1e-6):
+            base_ctrl = kc
+    if base_ctrl is None:
+        base_ctrl = data.qpos[7:7 + model.nu].copy()
+
+    # let the robot settle onto its feet for a moment before perturbing
+    for _ in range(30):
+        data.ctrl[:] = base_ctrl
+        mujoco.mj_step(model, data)
+
+    print(f"[demo] rolling out {NUM_STEPS} steps of REAL physics around the standing pose ...")
+    snaps = rollout_real_physics(model, data, NUM_STEPS, rng, base_ctrl)
 
     use_3d = True
     try:
@@ -212,7 +241,7 @@ def main():
         segs[label] = save_segment(frames, label)
 
     cards = {
-        "t0": title_card("Unitree Go1\nRandom policy · real MuJoCo physics\nAMD Radeon · ROCm 7.2.1", 4),
+        "t0": title_card("Unitree Go1\nStanding pose + random perturbations\nReal MuJoCo physics · AMD Radeon", 4),
         "t1": title_card("Side view", 2),
         "t2": title_card("Front view", 2),
         "t3": title_card("3/4 view", 2),
