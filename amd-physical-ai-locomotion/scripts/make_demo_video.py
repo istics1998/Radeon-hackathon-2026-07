@@ -1,111 +1,113 @@
 #!/usr/bin/env python3
 """
-Demo video renderer — stable body-center + thick-line robot render.
+Demo video renderer — 2D side-view via PIL, thick lines guaranteed visible.
 
-Reads body positions (xpos) from CPU MuJoCo data and draws the Go1 as:
-  - Torso: large semi-transparent box
-  - 4 legs: thick colored lines (hip→knee→foot)
-  - Feet: colored dots (red when touching ground)
-  - Ground: grid plane
-  - Info overlay
+Reads body positions from CPU MuJoCo, projects to 2D (side view),
+draws with PIL rectangles. No matplotlib 3D rendering quirks.
 
 Usage:
     python3 scripts/make_demo_video.py
 """
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import mujoco
 import imageio
 from mujoco_playground import registry as reg
 from pathlib import Path
 
-# Go1 body hierarchy (typical nbody layout for quadruped with 6-dof free joint)
-# body[0]=world, body[1]=torso, then 4 legs each with thigh+shin+foot
-# We'll discover it at runtime
+# Image dimensions
+W, H = 640, 480
+SCALE = 200  # pixels per meter
+# Camera looks from +x axis, so we plot (y, z) — side view
+# y goes to image x, z goes to image y (inverted, so up is up)
 
 
-def find_leg_bodies(model):
-    """Return dict mapping leg_name -> (hip_body_id, knee_body_id, foot_body_id)."""
-    # Strategy: starting from body 1 (torso), walk through body tree
-    # to find 4 legs with 3 segments each
+def project(pos, camera_origin=(2.0, 0.0, 0.3)):
+    """Project 3D world to 2D image coords (y→x, z→y, scaled)."""
+    # Simple orthographic: drop the x-axis, use y for image x, z for image y
+    img_x = pos[1] * SCALE + W / 2
+    img_y = H / 2 - pos[2] * SCALE
+    return int(img_x), int(img_y)
+
+
+def draw_ground(draw, extent=0.8):
+    """Draw ground line + grid."""
+    gy = H // 2
+    # Main ground line
+    draw.line([(0, gy), (W, gy)], fill=(60, 60, 60), width=2)
+    # Subtle perspective lines (radiating from center to horizon)
+    for v in np.linspace(-extent, extent, 7):
+        ix, _ = project([0, v, 0])
+        draw.line([(W // 2, gy), (ix, gy - 30)], fill=(180, 180, 180), width=1)
+
+
+def draw_torso(draw, xpos, xmat):
+    """Draw torso as a thick dark rectangle (side view)."""
+    # Get torso center and orientation in 2D
+    cy, cz = project(xpos[1])
+    # Use body xmat to get rotation around y/z axis
+    # For side view, we just draw a horizontal rectangle for the torso
+    torso_w, torso_h = 100, 30  # pixels
+    draw.rectangle(
+        [cy - torso_w // 2, cz - torso_h // 2,
+         cy + torso_w // 2, cz + torso_h // 2],
+        fill=(20, 30, 50), outline=(0, 0, 0), width=2
+    )
+    # Head indicator (small light square on top-front)
+    draw.rectangle(
+        [cy - 40, cz - torso_h // 2 - 12,
+         cy - 10, cz - torso_h // 2 + 4],
+        fill=(180, 180, 200), outline=(0, 0, 0), width=1
+    )
+
+
+def draw_leg(draw, xpos, hip, knee, foot, color):
+    """Draw one leg as thick lines (hip→knee→foot) with joint circles."""
+    hy, hz = project(xpos[hip])
+    ky, kz = project(xpos[knee])
+    fy, fz = project(xpos[foot])
+
+    # Thigh
+    draw.line([(hy, hz), (ky, kz)], fill=color, width=10)
+    # Shin
+    draw.line([(ky, kz), (fy, fz)], fill=color, width=8)
+    # Joints
+    for x, y in [(hy, hz), (ky, kz), (fy, fz)]:
+        r = 6
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=(0, 0, 0))
+    # Foot dot
+    foot_color = (220, 40, 40) if fz > H // 2 - 10 else color
+    r = 8
+    draw.ellipse([fy - r, fz - r, fy + r, fz + r], fill=foot_color, outline=(0, 0, 0))
+
+
+def find_legs(model):
     children = {i: [] for i in range(model.nbody)}
     for j in range(1, model.nbody):
-        p = model.body_parentid[j]
-        children[p].append(j)
+        children[model.body_parentid[j]].append(j)
 
-    legs = {}
-    leg_names = ["FR", "FL", "RR", "RL"]
-    torso_children = children[1]  # direct children of torso
-    for idx, child in enumerate(torso_children[:4]):  # typically 4 in correct order
-        knee_children = children.get(child, [])
-        foot = knee_children[0] if knee_children else None
-        foot_children = children.get(foot, [])
-        foot2 = foot_children[0] if foot_children else None
-        legs[leg_names[idx] if idx < len(leg_names) else f"leg{idx}"] = {
-            "hip": child, "knee": foot if foot else child, "foot": foot2 if foot2 else foot if foot else child
-        }
-
-    return legs, children
+    legs = []
+    # Take first 4 children of torso (body 1) as legs
+    for c in children[1][:4]:
+        knee = children[c][0] if children[c] else c
+        foot = children[knee][0] if children[knee] else knee
+        legs.append((c, knee, foot))
+    return legs
 
 
-def draw_torso_box(ax, xpos, xmat):
-    """Draw the torso as a box from body[1] position+orientation."""
-    center = xpos[1]
-    # Use the body's rotation matrix (3x3)
-    rot = xmat[1].reshape(3, 3) if xmat[1].size == 9 else xmat[1]
-
-    # Torso approximate size (Go1)
-    sx, sy, sz = 0.20, 0.42, 0.12
-    corners_local = np.array([
-        [-sx, -sy, -sz], [sx, -sy, -sz], [sx, sy, -sz], [-sx, sy, -sz],
-        [-sx, -sy,  sz], [sx, -sy,  sz], [sx, sy,  sz], [-sx, sy,  sz],
-    ])
-    corners = corners_local @ rot.T + center
-
-    # Draw edges (wireframe box — always works)
-    edges = [
-        (0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)
-    ]
-    for i, j in edges:
-        ax.plot([corners[i,0], corners[j,0]],
-                [corners[i,1], corners[j,1]],
-                [corners[i,2], corners[j,2]],
-                color='#1a1a2e', lw=3, solid_capstyle='round')
-
-
-def draw_leg(ax, xpos, leg, color):
-    """Draw one leg as hip→knee→foot thick lines + joint dots."""
-    hip = leg["hip"]
-    knee = leg["knee"]
-    foot = leg["foot"]
-
-    # Draw segments
-    for (a, b) in [(hip, knee), (knee, foot)]:
-        ax.plot([xpos[a, 0], xpos[b, 0]],
-                [xpos[a, 1], xpos[b, 1]],
-                [xpos[a, 2], xpos[b, 2]],
-                color=color, lw=6, solid_capstyle='round')
-
-    # Joint dots
-    ax.scatter(*xpos[hip], color=color, s=50, zorder=5)
-    ax.scatter(*xpos[knee], color=color, s=40, zorder=5)
-    ax.scatter(*xpos[foot], color='red' if xpos[foot,2] < 0.03 else color,
-               s=60, zorder=5)
-
-
-def draw_ground(ax, extent=0.9):
-    """Draw ground plane + subtle grid."""
-    # Semi-transparent plane
-    xx, yy = np.meshgrid([-extent, extent], [-extent, extent])
-    ax.plot_surface(xx, yy, np.zeros_like(xx),
-                    color='#f0f0f0', alpha=0.5, linewidth=0)
-    # Grid
-    for v in np.linspace(-extent, extent, 7):
-        ax.plot([v, v], [-extent, extent], [0, 0], color='gray', lw=0.3, alpha=0.3)
-        ax.plot([-extent, extent], [v, v], [0, 0], color='gray', lw=0.3, alpha=0.3)
+def draw_hud(draw, step, total):
+    """Draw info overlay."""
+    txt = f"step {step}/{total}"
+    # PIL default font is small but works
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((10, 10), "Unitree Go1  random policy", fill=(20, 20, 60), font=font)
+    draw.text((10, 30), txt, fill=(20, 20, 60), font=font)
+    draw.text((10, H - 30), "AMD Radeon  ROCm 7.2.1  JAX 0.11.0",
+              fill=(80, 80, 80), font=font)
 
 
 def main():
@@ -124,59 +126,32 @@ def main():
 
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
-
-    legs, children = find_leg_bodies(model)
-    leg_colors = {"FR": "orangered", "FL": "royalblue",
-                  "RR": "seagreen", "RL": "darkorange"}
+    legs = find_legs(model)
+    leg_colors = [(200, 40, 40), (40, 80, 200), (40, 180, 80), (220, 130, 40)]
 
     print(f"[make_demo_video] Bodies: {model.nbody}, Legs: {len(legs)}")
-    for name, l in legs.items():
-        print(f"  {name}: hip={l['hip']} knee={l['knee']} foot={l['foot']}")
 
     frames = []
     for i in range(num_frames):
         data.ctrl[:] = np.random.uniform(-1, 1, 12)
         mujoco.mj_step(model, data)
         xpos = data.xpos
-        xmat = data.xmat
 
-        fig = plt.figure(figsize=(8, 6), facecolor='white')
-        ax = fig.add_subplot(111, projection='3d', facecolor='white')
-        ax.view_init(elev=-20, azim=60)
-        ax.set_xlim(-0.7, 0.7)
-        ax.set_ylim(-0.7, 0.7)
-        ax.set_zlim(-0.05, 0.65)
-        ax.set_xticklabels([]); ax.set_yticklabels([]); ax.set_zticklabels([])
+        img = Image.new("RGB", (W, H), (250, 250, 252))
+        draw = ImageDraw.Draw(img)
+        draw_ground(draw)
+        draw_torso(draw, xpos, data.xmat)
 
-        draw_ground(ax)
-        draw_torso_box(ax, xpos, xmat)
+        for (hip, knee, foot), color in zip(legs, leg_colors):
+            draw_leg(draw, xpos, hip, knee, foot, color)
 
-        for name, leg in legs.items():
-            color = leg_colors.get(name, "gray")
-            draw_leg(ax, xpos, leg, color)
-
-        # Title + step counter
-        ax.set_title("Unitree Go1 — random policy", fontsize=12, pad=6)
-        ax.text2D(0.02, 0.97, f"step {i+1}/{num_frames}",
-                  transform=ax.transAxes, fontsize=9, va='top',
-                  bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7))
-
-        fig.canvas.draw()
-        w, h = fig.canvas.get_width_height()
-        img = np.frombuffer(fig.canvas.tostring_argb(), dtype="uint8").reshape(
-            (h, w, 4))[:, :, 1:]
-        frames.append(img)
-        plt.close(fig)
+        draw_hud(draw, i + 1, num_frames)
+        frames.append(np.array(img))
 
         if (i + 1) % 10 == 0:
             print(f"  rendered {i + 1}/{num_frames}")
 
     print(f"[make_demo_video] Writing {out_path} ...")
-    h_fix = (16 - frames[0].shape[0] % 16) % 16
-    w_fix = (16 - frames[0].shape[1] % 16) % 16
-    if h_fix or w_fix:
-        frames = [np.pad(f, ((0,h_fix),(0,w_fix),(0,0)), mode='edge') for f in frames]
-
     imageio.mimsave(str(out_path), np.stack(frames), fps=fps,
                     codec="libx264", quality=10, pixelformat="yuv420p")
     size_kb = out_path.stat().st_size / 1024
