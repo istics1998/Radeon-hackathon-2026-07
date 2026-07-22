@@ -110,22 +110,16 @@ def main():
 
     data = mujoco.MjData(model)
 
-    # PD controller gains for stable standing
-    KP = 80.0   # proportional gain
-    KD = 5.0    # derivative gain
-    # Target: all joints at 0 (standing pose with height ~0.45m)
-    qpos_target = np.zeros(12)
-
     # Lift robot up to start
     data.qpos[2] = 0.7
     mujoco.mj_forward(model, data)
 
     frames = []
     for i in range(num_frames):
-        # PD position controller: tau = KP * (target - q) - KD * qvel
-        for j in range(12):
-            error = qpos_target[j] - data.qpos[7 + j]
-            data.ctrl[j] = KP * error - KD * data.qvel[6 + j]
+        # Inverse dynamics: compute the torques needed to maintain
+        # the current pose (gravity compensation)
+        mujoco.mj_inverse(model, data)
+        data.ctrl[:] = data.qfrc_inverse[:12]
 
         mujoco.mj_step(model, data)
         xpos = data.xpos
