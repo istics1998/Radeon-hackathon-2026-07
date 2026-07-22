@@ -159,7 +159,7 @@ def main():
         for p in flist:
             f.write(f"file '{p}'\n")
 
-    out_path = Path("outputs/demo_full.mp4")
+    out_path = Path("outputs/demo_full2.mp4")
     cmd = f"ffmpeg -y -f concat -safe 0 -i {tmp_txt} -c copy {out_path}"
     print(f"[make_demo_video_full] Concatenating {len(flist)} segments...")
     subprocess.run(cmd, shell=True, check=True)
