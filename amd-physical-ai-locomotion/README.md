@@ -12,7 +12,7 @@ Track 3 (Physical AI) submission for the AMD AI DevMaster Hackathon.
 
 ![demo preview](assets/preview.gif)
 
-🎥 [Demo Video on Bilibili / B 站演示视频](https://www.bilibili.com/video/BV1ATgC69Eqw/) · [ROCm Bug Report / Bug 报告](docs/ROCM_BUG_REPORT.md)
+🎥 [Demo Video on Bilibili / B 站演示视频](https://www.bilibili.com/video/BV1ATgC69Eqw/) · [ROCm Bug Report / Bug 报告](docs/ROCM_BUG_REPORT.md) · [技术博客 / Blog (知乎)](https://zhuanlan.zhihu.com/p/2063361463343912837)
 
 Contents / 目录: [1. Overview / 项目简介](#1-overview--项目简介) · [2. Development / 开发过程](#2-development-process--challenges--开发过程与遇到的困难) · [3. Code Origin / 代码来源](#3-code-origin--contributions--代码来源与贡献) · [4. Team / 团队分工](#4-team--团队分工) · [5. Setup & Run / 安装与运行](#5-setup--run--安装与运行) · [6. Results / 运行结果](#6-results--运行结果) · [7. Demo / 演示视频](#7-demo-video--演示视频)
 
@@ -65,17 +65,13 @@ We could not disable it: environment variables (`HSA_TOOLS_LIB=`, `ROCP_TOOL_LIB
 
 无法关闭它：环境变量（`HSA_TOOLS_LIB=`、`ROCP_TOOL_LIB=`、`ROCPROFILER_DISABLE=1`）无效；XLA flags（`command_buffer`、`autotune_level=0` 等）无效；`patchelf --remove-needed` 因插件需要 `rocprofiler_force_configure` 符号而失败；卸载 `rocprofiler-sdk` 会不可逆地破坏 JAX GPU 能力。完整复现步骤、rocgdb 栈和 ldd 证据见 [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md)。
 
-What is confirmed working: the MJX environment (`env.reset()` / `env.step()` / `jax.vmap`) all run on GPU; our PPO algorithm, observation structure, GAE, and PPO updates are validated (they run and produce finite, non-NaN reward/loss values); the from-scratch jit PPO avoids the brax crash path; and single-env rollouts run fine — the crash only appears under repeated, dispatch-heavy workloads.
+What is confirmed working, isolated from the crash: `env.reset()` / `env.step()` / a single `jax.vmap` step run on the GPU without crashing, and `scripts/00_verify_rocm.sh` passes 6/6. Simple, low-dispatch GPU operations are fine. The segfault appears once training dispatches many kernels through nested `lax.scan` — the full PPO loop hits it inside the first chunk.
 
-确认正常的部分：MJX 环境（`env.reset()` / `env.step()` / `jax.vmap`）在 GPU 上均正常；我们的 PPO 算法、观测结构、GAE、PPO 更新均验证正确并输出真实 reward/loss；从零实现的 jit PPO 规避了 brax 崩溃路径；单环境 rollout 正常——崩溃仅在重复、高频 dispatch 的负载下出现。
+与崩溃隔离来看正常的部分：`env.reset()` / `env.step()` / 单次 `jax.vmap` 能在 GPU 上不崩地跑，`scripts/00_verify_rocm.sh` 通过 6/6。简单、低 dispatch 的 GPU 操作没问题。一旦训练通过嵌套 `lax.scan` 发射大量 kernel，段错误就出现——完整 PPO 循环在第一个 chunk 内就撞上。
 
-Algorithm validation / 算法验证. On non-crashing runs the following short configs all reached `EXIT=0` with finite (non-NaN) reward/loss and saved checkpoints, which confirms the PPO implementation runs correctly — these are correctness checks (3–7 iterations), not converged training. 在未崩溃的轮次中，以下短配置均 `EXIT=0`，输出有限（非 NaN）reward/loss 并写入 checkpoint，说明 PPO 实现能正确运行——这是正确性验证（3–7 个 iteration），不是收敛训练。
+Observed on this instance / 实例实测. Running `SMOKE=1 bash scripts/01_train.sh` twice: the GPU is detected (`RocmDevice`), the env and trainer initialize and print the training plan, then both runs segfault in the first `lax.scan` chunk with `EXIT=139` (`Segmentation fault (core dumped)`) and no checkpoint is written. This matches the ROCm profiler race described above — it is a runtime-layer crash, not a logic error in our code.
 
-| Envs | Unroll | Iters | Result |
-|------|--------|-------|--------|
-| 256  | 10     | 7     | EXIT=0, checkpoint saved |
-| 512  | 10     | 5     | EXIT=0, checkpoint saved |
-| 1024 | 20     | 3     | EXIT=0, checkpoint saved |
+实例实测：连跑两次 `SMOKE=1 bash scripts/01_train.sh`——GPU 被识别（`RocmDevice`），环境与训练器初始化并打印训练计划，随后两次都在第一个 `lax.scan` chunk 段错误、`EXIT=139`（`Segmentation fault (core dumped)`）、未写出任何 checkpoint。这与上述 ROCm profiler 竞态吻合，是运行时层崩溃,非我方代码逻辑错误。
 
 If we kept optimizing / 如果继续优化. File the upstream ROCm/JAX bug (a draft is ready in [docs/ROCM_BUG_REPORT.md](docs/ROCM_BUG_REPORT.md)); once the profiler race is fixed or a patched plugin ships, run full training to convergence, add domain randomization, and attempt sim-to-real transfer.
 
@@ -184,7 +180,7 @@ Repository layout / 仓库结构:
 ```
 scripts/00_verify_rocm.sh        # Verify environment / 验证环境 (run first / 先跑这个)
 scripts/01_train.sh              # Train / 训练 (SMOKE=1 for quick test / 快速验证)
-scripts/make_demo_video_full.py  # Demo video: random policy, matplotlib, multi-view / 演示视频（随机策略）
+scripts/make_demo_video_full.py  # Demo: random policy, real mj_step physics, 3D render / 演示（随机策略+真物理+3D）
 scripts/repro_hsa_segfault.py    # Minimal crash reproduction / 最小崩溃复现脚本
 scripts/02_eval.sh               # Closed-loop eval (needs a trained checkpoint) / 闭环评估（需 checkpoint）
 scripts/03_record_video.sh       # MuJoCo-renderer video (needs a checkpoint) / MuJoCo 渲染器视频（需 checkpoint）
@@ -201,9 +197,9 @@ There is no `data/` directory or dataset generation script: the environments com
 
 没有 `data/` 目录或数据生成脚本：环境直接来自 MuJoCo Playground 的 registry，因此没有自制数据集需要构建或下载。推理逻辑在 `src/eval.py`（加载 checkpoint 跑闭环 rollout）和 `src/render.py`（渲染 rollout 成 mp4）里——两者都需要训练好的 checkpoint，而 ROCm bug 使我们无法产出，故提交的演示改用 `scripts/make_demo_video_full.py`（随机策略，无需 checkpoint）。
 
-Actual results / 实际结果. `00_verify_rocm.sh` passes 6/6 checks and prints `RocmDevice`. The PPO algorithm is validated — it runs and produces finite (non-NaN) reward/loss with a saved checkpoint on non-crashing runs (`EXIT=0`, see the table in section 2); these are short correctness checks, not converged training. The GPU simulation and render pipeline works, and the demo video is rendered from a random-policy rollout. Full stable training is blocked by the ROCm profiler race (section 2).
+Actual results / 实际结果. `00_verify_rocm.sh` passes 6/6 and prints `RocmDevice`. The Go1 env loads and the PPO trainer compiles and dispatches on the GPU, then segfaults in the first `lax.scan` chunk (`EXIT=139`, observed twice; see section 2) — no checkpoint, reward curve, or eval metric was produced. The demo video is a random-policy rollout with real MuJoCo physics (CPU), rendered in 3D. Full training is blocked by the ROCm profiler race (section 2).
 
-实际结果：`00_verify_rocm.sh` 通过 6/6 检查并打印 `RocmDevice`。PPO 算法已验证——在未崩溃轮次输出真实 reward/loss 并保存 checkpoint（`EXIT=0`，见第 2 节表）。GPU 仿真+渲染管线正常，演示视频由随机策略 rollout 渲染。完整稳定训练受 ROCm profiler 竞态阻塞（第 2 节）。
+实际结果：`00_verify_rocm.sh` 通过 6/6 并打印 `RocmDevice`。Go1 环境能加载、PPO 训练器能在 GPU 上编译并发射，随后在第一个 `lax.scan` chunk 段错误（`EXIT=139`，实测两次；见第 2 节）——没有产出 checkpoint、reward 曲线或评估指标。演示视频是随机策略 + 真实 MuJoCo 物理（CPU）的 rollout，3D 渲染。完整训练受 ROCm profiler 竞态阻塞（第 2 节）。
 
 Target results, once the ROCm bug is fixed / 目标结果，ROCm bug 修复后: training reward rises over iterations; eval shows positive mean episode reward with the robot upright; the video shows Go1 walking under commanded velocity. / 训练奖励随迭代上升；评估平均回合奖励为正且机器狗保持直立；视频展示 Go1 按指令速度行走。
 
@@ -215,13 +211,11 @@ Watch on Bilibili: [https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bi
 
 B 站观看：[https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/)。本地备份：[assets/demo_full2.mp4](assets/demo_full2.mp4)。
 
-Because full training is blocked by the ROCm profiler race (section 2), the demo is a random-policy rollout on `Go1JoystickFlatTerrain`, shown to demonstrate that the GPU physics simulation and rendering pipeline work correctly on AMD Radeon. It is not a trained walking policy.
+Because full training is blocked by the ROCm profiler race (section 2), the demo is a random-policy rollout on the real Go1 model with real MuJoCo physics (`mujoco.mj_step`), rendered in 3D from three camera angles via `mujoco.Renderer` (OSMesa). It shows the simulation + rendering pipeline working, not a trained walking gait — the robot moves under random control. The physics here runs on CPU MuJoCo and is separate from the GPU MJX path used for training.
 
-由于完整训练被 ROCm profiler 竞态阻塞（第 2 节），演示视频使用 `Go1JoystickFlatTerrain` 环境的随机策略 rollout，用于展示 GPU 物理仿真+渲染管线在 AMD Radeon 上正常工作，并非训练出的行走策略。
+由于完整训练被 ROCm profiler 竞态阻塞（第 2 节），演示视频是真实 Go1 模型上的随机策略 rollout，用真实 MuJoCo 物理（`mujoco.mj_step`）驱动，经 `mujoco.Renderer`（OSMesa）从三个机位做 3D 渲染。它展示的是仿真+渲染管线正常工作，不是训练出的步态——机器狗在随机控制下运动。这里的物理跑在 CPU MuJoCo 上，与训练用的 GPU MJX 路径是分开的。
 
-Note on rendering: MuJoCo's Renderer (OSMesa/EGL/glfw) is unavailable on Python 3.12 + MuJoCo 3.10, so the demo falls back to matplotlib 3D rendering.
-
-渲染说明：MuJoCo 的 Renderer（OSMesa/EGL/glfw）在 Python 3.12 + MuJoCo 3.10 上不可用，演示改用 matplotlib 3D 渲染。
+Regenerate / 重新生成: `MUJOCO_GL=osmesa python3 scripts/make_demo_video_full.py` (writes `assets/demo_full2.mp4`).
 
 ---
 

@@ -44,30 +44,34 @@ custom dataset to build, license, or download.
   `RocmDevice`, confirming the GPU and JAX ROCm stack are live.
 - Simulation ran on the GPU: `env.reset()` / `env.step()` / `jax.vmap` all execute
   on the Radeon GPU via MJX.
-- PPO ran on the GPU: on runs that did not hit the profiler race, training reached
-  `EXIT=0` with finite (non-NaN) reward/loss values and saved checkpoints (see §5
-  table). These were short 3–7 iteration correctness checks, not converged training.
-- Blocker: full stable training segfaults inside `libhsa-runtime64.so.1` — see §7.
+- PPO on the GPU: the trainer compiles and dispatches kernels on the Radeon GPU
+  (the run prints `RocmDevice`, obs/action sizes, and the training plan), then
+  segfaults inside the first `lax.scan` chunk. No checkpoint is written.
+- Blocker: full training segfaults inside `libhsa-runtime64.so.1` — see §7.
 
-## 5. Algorithm validation
+## 5. Observed training behavior
 
-On non-crashing runs the from-scratch jit PPO reached `EXIT=0` with finite (non-NaN)
-reward/loss and saved checkpoints. These are short correctness checks (3–7
-iterations), not converged training — they confirm the algorithm runs correctly,
-not that the robot learned to walk:
+Running `SMOKE=1 bash scripts/01_train.sh` on the Radeon instance, observed twice:
 
-| Envs | Unroll | Iters | Result |
-|------|--------|-------|--------|
-| 256  | 10     | 7     | EXIT=0, checkpoint saved |
-| 512  | 10     | 5     | EXIT=0, checkpoint saved |
-| 1024 | 20     | 3     | EXIT=0, checkpoint saved |
+```
+[device] Using AMD GPU — backend=gpu devices=[RocmDevice(id=0)]
+[train_jax_ppo] env=Go1JoystickFlatTerrain seed=0 num_envs=512
+[train_jax_ppo] actor_obs=48 critic_obs=123 action=12 episode_length=1000
+[train_jax_ppo] 10,240 steps/iter x 19 iters = 5 chunks of 4 (~194,560 env steps)
+Segmentation fault (core dumped)          EXIT=139
+```
+
+Both runs crashed in the first `lax.scan` chunk with `EXIT=139` and produced no
+checkpoint. The GPU is detected and the trainer initializes correctly; the crash
+is the ROCm profiler race (§7), a runtime-layer fault, not a logic error in our
+code. We therefore have no reward curve, checkpoint, or eval metric to report.
 
 Ablation — trainer choice on ROCm:
 
 | Trainer | Execution path | Result on gfx1100 |
 |---|---|---|
-| Brax PPO (`src/train.py`) | `pmap` + `device_put_replicated` | Segfaults early — replication hits the profiler race almost immediately |
-| From-scratch jit PPO (`src/train_jax_ppo.py`) | `jax.jit` + `lax.scan`, single device | Runs; `EXIT=0` on non-crashing runs; still susceptible under long dispatch-heavy runs |
+| Brax PPO (`src/train.py`) | `pmap` + `device_put_replicated` | Segfaults very early — replication hits the profiler race almost immediately |
+| From-scratch jit PPO (`src/train_jax_ppo.py`) | `jax.jit` + `lax.scan`, single device | Compiles and dispatches on GPU; still segfaults (`EXIT=139`) in the first chunk, but reaches further before crashing |
 
 ## 6. Innovation & key technical contributions
 
@@ -114,7 +118,8 @@ simulation-only results are acceptable for submission.
 
 ### Reproducibility checklist (align with README)
 - [x] `scripts/00_verify_rocm.sh` passes on the Radeon instance (RocmDevice)
-- [x] From-scratch jit PPO reaches `EXIT=0` on non-crashing runs (checkpoint saved)
+- [x] Trainer compiles and dispatches on the GPU (then segfaults, `EXIT=139`)
+- [x] `scripts/make_demo_video_full.py` produces the demo (random policy, real physics, 3D)
 - [ ] Full training to convergence — blocked by the ROCm profiler race (§7)
 - [x] `scripts/03_record_video.sh` produces the demo mp4 (random policy)
 - [ ] Docker build + run verified on a fresh Radeon instance
