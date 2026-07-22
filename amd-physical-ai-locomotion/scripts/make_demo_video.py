@@ -109,8 +109,8 @@ def main():
     name2id = find_body_ids(model)
 
     data = mujoco.MjData(model)
-    # 强制设为 qpos=0 (站立姿态, 高度 0.445m, 不是 keyframe 0 的蹲姿)
-    data.qpos[:] = 0
+    # 只设关节角度为 0 (站立姿态), 保持机身高度不变
+    data.qpos[7:19] = 0
     mujoco.mj_forward(model, data)
 
     frames = []
