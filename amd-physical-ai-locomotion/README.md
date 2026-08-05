@@ -12,7 +12,7 @@ Track 3 (Physical AI) submission for the AMD AI DevMaster Hackathon.
 
 ![demo preview](assets/preview.gif)
 
-🎥 [Demo Video on Bilibili / B 站演示视频](https://www.bilibili.com/video/BV1ATgC69Eqw/) · [ROCm Bug Report / Bug 报告](docs/ROCM_BUG_REPORT.md) · [技术博客 / Blog (知乎)](https://zhuanlan.zhihu.com/p/2063361463343912837)
+🎥 [Demo Video on Bilibili / B 站演示视频](https://b23.tv/18MX3yY) · [ROCm Bug Report / Bug 报告](docs/ROCM_BUG_REPORT.md) · [技术博客 / Blog (知乎)](https://zhuanlan.zhihu.com/p/2063361463343912837)
 
 Contents / 目录: [1. Overview / 项目简介](#1-overview--项目简介) · [2. Development / 开发过程](#2-development-process--challenges--开发过程与遇到的困难) · [3. Code Origin / 代码来源](#3-code-origin--contributions--代码来源与贡献) · [4. Team / 团队分工](#4-team--团队分工) · [5. Setup & Run / 安装与运行](#5-setup--run--安装与运行) · [6. Results / 运行结果](#6-results--运行结果) · [7. Demo / 演示视频](#7-demo-video--演示视频)
 
@@ -212,9 +212,9 @@ Note on the GPU goal / 关于 GPU 目标的说明: the original aim was GPU-acce
 
 ## 7. Demo Video / 演示视频
 
-Watch on Bilibili: [https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/) *(update with the trained-policy re-upload)*. Local: [assets/demo_policy.mp4](assets/demo_policy.mp4).
+Watch on Bilibili: [https://b23.tv/18MX3yY](https://b23.tv/18MX3yY). Local: [assets/demo_policy.mp4](assets/demo_policy.mp4).
 
-B 站观看：[https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/)*（待替换为训练策略重传版）*。本地：[assets/demo_policy.mp4](assets/demo_policy.mp4)。
+B 站观看：[https://b23.tv/18MX3yY](https://b23.tv/18MX3yY)。本地：[assets/demo_policy.mp4](assets/demo_policy.mp4)。
 
 The demo is the **trained PPO policy** (`checkpoints/final.pkl`) rolled out on the real Go1 model with real MuJoCo physics, rendered in 3D via `mujoco.Renderer`. Each segment feeds a different joystick velocity command — stand, walk forward/backward, side-step left/right, turn in place left/right, and a walk+turn arc — and the *same* network produces every motion; the gait is learned, not hand-authored. All 8 segments hold the trunk upright the whole rollout (min trunk height 0.288 m). Rendering runs on CPU MuJoCo, matching the CPU training backend.
 
