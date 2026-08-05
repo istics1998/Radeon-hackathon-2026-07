@@ -10,8 +10,6 @@ Track 3 (Physical AI) submission for the AMD AI DevMaster Hackathon.
 ![Python](https://img.shields.io/badge/Python-3.12-green)
 ![Platform](https://img.shields.io/badge/Platform-AMD%20Radeon%20gfx1100-orange)
 
-![demo preview](assets/preview.gif)
-
 🎥 [Demo Video on Bilibili / B 站演示视频](https://b23.tv/18MX3yY) · [ROCm Bug Report / Bug 报告](docs/ROCM_BUG_REPORT.md) · [技术博客 / Blog (知乎)](https://zhuanlan.zhihu.com/p/2063361463343912837)
 
 Contents / 目录: [1. Overview / 项目简介](#1-overview--项目简介) · [2. Development / 开发过程](#2-development-process--challenges--开发过程与遇到的困难) · [3. Code Origin / 代码来源](#3-code-origin--contributions--代码来源与贡献) · [4. Team / 团队分工](#4-team--团队分工) · [5. Setup & Run / 安装与运行](#5-setup--run--安装与运行) · [6. Results / 运行结果](#6-results--运行结果) · [7. Demo / 演示视频](#7-demo-video--演示视频)
