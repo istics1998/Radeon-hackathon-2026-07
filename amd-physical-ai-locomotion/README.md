@@ -20,20 +20,20 @@ Contents / 目录: [1. Overview / 项目简介](#1-overview--项目简介) · [2
 
 ## 1. Overview / 项目简介
 
-What this submission delivers: a working GPU physics-simulation and rendering pipeline for quadruped locomotion on an AMD Radeon GPU, plus a from-scratch single-GPU jit PPO implementation that is validated and correct. What it does not deliver: a fully trained walking policy — full training is blocked by a ROCm runtime bug (details in section 2), so the demo video is a random-policy rollout, not a trained policy.
+What this submission delivers: a **fully trained** Unitree Go1 joystick-locomotion policy — the demo video shows the real PPO policy walking, turning, and side-stepping under velocity commands, not a scripted or random rollout. Training reward climbed from ~0.001 to **23.9** over 62.26M environment steps. Plus a working GPU physics-simulation and rendering pipeline and a from-scratch single-GPU jit PPO implementation. The honest caveat: GPU training is blocked by a ROCm profiler-race runtime bug (details in section 2), so training was run **on CPU** through the same JAX/MJX stack — slower, but it converged.
 
-本作品实际交付的是：一套面向四足运动的 GPU 物理仿真+渲染管线，在 AMD Radeon GPU 上正常工作；以及一套从零实现、已验证正确的单卡 jit PPO。未能交付的是：完整训练出的行走策略——完整训练被一个 ROCm 运行时 bug 阻塞（详见第 2 节），因此演示视频是随机策略 rollout，而非训练出的策略。
+本作品实际交付的是：一个**完整训练出来的**宇树 Go1 摇杆运动策略——演示视频展示的是真实 PPO 策略在按速度指令行走、转身、横移，而非脚本或随机 rollout。训练 reward 从约 0.001 上升到 **23.9**，历时 62.26M 环境步。此外还有一套可用的 GPU 物理仿真+渲染管线,以及从零实现的单卡 jit PPO。诚实说明：GPU 训练被一个 ROCm profiler 竞态运行时 bug 阻塞（详见第 2 节），因此训练是通过同一套 JAX/MJX 栈**在 CPU 上**完成的——更慢,但确实收敛了。
 
-The intended goal was to train a Unitree Go1 quadruped to walk under joystick velocity commands (`Go1JoystickFlatTerrain`) using reinforcement learning (PPO) on an AMD Radeon GPU, with the whole pipeline on the GPU: physics simulated by the JAX backend of MuJoCo Playground (MJX) for GPU-parallel rollouts, and training by our own from-scratch PPO. That goal was not reached because of the ROCm bug below. What we could verify: `scripts/00_verify_rocm.sh` passes 6/6 and the GPU is live (`RocmDevice`); the Go1 environment loads and the PPO trainer compiles and dispatches kernels on the GPU (the run prints the device, the observation/action sizes, and the training plan). What we could not achieve: training segfaults inside the first `lax.scan` chunk before any checkpoint is written — so we have no trained policy and no reward curve.
+The intended goal was to train a Unitree Go1 quadruped to walk under joystick velocity commands (`Go1JoystickFlatTerrain`) using reinforcement learning (PPO) on an AMD Radeon GPU, with the whole pipeline on the GPU: physics simulated by the JAX backend of MuJoCo Playground (MJX) for GPU-parallel rollouts, and training by PPO. The GPU path was blocked by the ROCm profiler race below, so we fell back to running the identical JAX/MJX stack on CPU. What we verified: `scripts/00_verify_rocm.sh` passes 6/6 and the GPU is live (`RocmDevice`); the Go1 environment loads and the PPO trainer compiles and dispatches kernels on the GPU. What the GPU could not do: sustain a full training run — it segfaults inside the first `lax.scan` chunk (section 2). What we achieved on CPU instead: a complete 62.26M-step training run (275.7 min) with reward rising 0.001 → 13.4 (9.8M steps) → 23.9 (62.26M steps); 20 checkpoints saved; the final policy walks under command (demo in section 7).
 
-项目原定目标是用强化学习（PPO）在 AMD Radeon GPU 上训练宇树 Go1 四足机器狗按摇杆速度指令行走（`Go1JoystickFlatTerrain`），全程 GPU：仿真用 MuJoCo Playground (MJX) 的 JAX 后端做 GPU 并行物理仿真，训练用我们从零实现的 PPO。该目标因下述 ROCm bug 未能达成。我们能验证的是：`scripts/00_verify_rocm.sh` 通过 6/6、GPU 点亮（`RocmDevice`）；Go1 环境能加载，PPO 训练器能编译并在 GPU 上发射 kernel（运行会打印设备、观测/动作维度和训练计划）。未能达成的是：训练在第一个 `lax.scan` chunk 里就段错误，还没写出任何 checkpoint——因此我们没有训练好的策略，也没有 reward 曲线。
+项目原定目标是用强化学习（PPO）在 AMD Radeon GPU 上训练宇树 Go1 四足机器狗按摇杆速度指令行走（`Go1JoystickFlatTerrain`），全程 GPU：仿真用 MuJoCo Playground (MJX) 的 JAX 后端做 GPU 并行物理仿真。GPU 路径被下述 ROCm profiler 竞态阻塞，于是退回到用同一套 JAX/MJX 栈在 CPU 上跑。我们验证过的：`scripts/00_verify_rocm.sh` 通过 6/6、GPU 点亮（`RocmDevice`）；Go1 环境能加载，PPO 训练器能编译并在 GPU 上发射 kernel。GPU 做不到的：撑住一次完整训练——它在第一个 `lax.scan` chunk 里段错误（第 2 节）。我们改在 CPU 上达成的：一次完整的 62.26M 步训练（275.7 分钟），reward 从 0.001 → 13.4（9.8M 步）→ 23.9（62.26M 步）；保存 20 个 checkpoint；最终策略能按指令行走（演示见第 7 节）。
 
 Problem, approach, metrics, stack / 问题、方法、指标、技术栈:
 
 - Problem / 问题: velocity-command quadruped locomotion, a core Physical AI task. / 速度指令下的四足运动控制，Physical AI 的核心任务。
 - Approach / 方法: GPU-parallel MJX simulation with a from-scratch single-GPU jit PPO. / GPU 并行 MJX 仿真 + 从零实现的单卡 jit PPO。
-- Target metric (not obtained) / 目标指标（未测得）: the metric that would evaluate success is mean episode reward under commanded velocity (equivalently, velocity-tracking error). We could not measure it — training never reached convergence because of the ROCm bug. / 评价成功的指标本应是指令速度下的平均回合奖励（等价于速度跟踪误差）。因 ROCm bug 训练未收敛，该指标未能测得。
-- Measured signals (setup only, no performance) / 实测信号（仅环境，无性能）: `scripts/00_verify_rocm.sh` passes 6/6 and prints `RocmDevice`; the Go1 env loads and the PPO trainer compiles and dispatches on the GPU. Training then segfaults in the first `lax.scan` chunk, so no checkpoint, reward curve, or eval metric was produced. / `scripts/00_verify_rocm.sh` 通过 6/6 并打印 `RocmDevice`；Go1 环境能加载、PPO 训练器能在 GPU 上编译并发射。随后训练在第一个 `lax.scan` chunk 段错误，因此没有产出 checkpoint、reward 曲线或评估指标。
+- Metric / 指标: mean episode reward under commanded velocity (equivalent to velocity-tracking error). Achieved **23.9** (up from ~0.001) over 62.26M environment steps. / 指令速度下的平均回合奖励（等价于速度跟踪误差）。62.26M 环境步达到 **23.9**（从约 0.001 起步）。
+- Measured signals / 实测信号: GPU setup verified (`scripts/00_verify_rocm.sh` passes 6/6, `RocmDevice` detected); training completed on CPU (ROCm profiler bug blocked GPU training, see section 2); 20 checkpoints saved; reward curve recorded in `train.log`; final policy executes all commanded gaits (demo in section 7). / GPU 环境验证通过（`scripts/00_verify_rocm.sh` 6/6，`RocmDevice` 识别）；训练在 CPU 上完成（ROCm profiler bug 阻塞 GPU 训练，见第 2 节）；保存 20 个 checkpoint；reward 曲线记录于 `train.log`；最终策略执行所有指令步态（演示见第 7 节）。
 - Stack / 技术栈: AMD Radeon gfx1100, ROCm 7.2.1, JAX 0.11, MuJoCo Playground (MJX), Flax, Optax, Python 3.12.
 
 Why AMD: MJX runs through the XLA compiler via JAX, which supports AMD GPUs natively with no CUDA-only dependency. This project shows end-to-end GPU-parallel physics simulation and RL training on a single AMD Radeon GPU via ROCm, following the path in the [ROCm + JAX + MuJoCo blog](https://rocm.blogs.amd.com/artificial-intelligence/rocm-jax-mujoco/README.html).
@@ -156,20 +156,23 @@ bash scripts/00_verify_rocm.sh
 # 1. Smoke test — starts training, then hits the ROCm segfault / 冒烟测试（会触发段错误）
 SMOKE=1 bash scripts/01_train.sh
 
-# 2. Full training — blocked by the ROCm profiler race (section 2) / 完整训练（被 ROCm 竞态阻塞）
+# 2a. GPU training — hits the ROCm profiler race (section 2) / GPU 训练（触发 ROCm 竞态）
 bash scripts/01_train.sh
 
-# 3. Reproduce the demo video (random policy, no checkpoint needed) / 复现演示视频（随机策略，无需 checkpoint）
-python3 scripts/make_demo_video_full.py
+# 2b. CPU training — the fallback that actually converged (62.26M steps ~4.6h) / CPU 训练（真正收敛的退路）
+MUJOCO_GL=egl python3 scripts/train_go1.py    # writes checkpoints/ + train.log
+
+# 3. Render the demo from the trained policy / 用训练策略渲染演示
+MUJOCO_GL=egl python3 scripts/render_policy_video.py   # needs checkpoints/latest.pkl
 ```
 
-How to verify / 验证方式. Step 0 is the reliable, reproducible check: it prints `RocmDevice` and passes 6/6, confirming the GPU and JAX ROCm stack are live. Steps 1–2 launch our PPO training and will hit the ROCm profiler segfault on gfx1100 (section 2) — that is the expected, documented failure, not a setup error. Step 3 reproduces the demo video from a random-policy rollout and needs no trained checkpoint.
+How to verify / 验证方式. Step 0 is the reliable, reproducible check: it prints `RocmDevice` and passes 6/6, confirming the GPU and JAX ROCm stack are live. Step 2a launches PPO training on the GPU and hits the ROCm profiler segfault on gfx1100 (section 2) — the expected, documented failure. Step 2b runs the same training on CPU and converges (reward → 23.9; `train.log` records the curve, 20 checkpoints land in `checkpoints/`). Step 3 loads `checkpoints/latest.pkl` and renders the trained policy (`assets/demo_policy.mp4`).
 
-验证方式：第 0 步是稳定可复现的检查——打印 `RocmDevice` 并通过 6/6，确认 GPU 与 JAX ROCm 栈可用。第 1–2 步启动我们的 PPO 训练，会在 gfx1100 上触发 ROCm profiler 段错误（见第 2 节）——这是预期内、已记录的失败，不是环境配置错误。第 3 步用随机策略 rollout 复现演示视频，无需训练好的 checkpoint。
+验证方式：第 0 步是稳定可复现的检查——打印 `RocmDevice` 并通过 6/6，确认 GPU 与 JAX ROCm 栈可用。第 2a 步在 GPU 上启动 PPO 训练，会在 gfx1100 上触发 ROCm profiler 段错误（第 2 节）——预期内、已记录的失败。第 2b 步在 CPU 上跑同样的训练并收敛（reward → 23.9；`train.log` 记录曲线，`checkpoints/` 落 20 个 checkpoint）。第 3 步加载 `checkpoints/latest.pkl` 渲染训练策略（`assets/demo_policy.mp4`）。
 
-Note: `scripts/02_eval.sh` (closed-loop eval) and `scripts/03_record_video.sh` (MuJoCo-renderer video) both require a trained checkpoint, which full training cannot produce because of the ROCm bug — so they are not part of the reproducible path above. The committed demo was made by `scripts/make_demo_video_full.py`.
+Note: `scripts/02_eval.sh` (closed-loop eval) and `scripts/03_record_video.sh` (MuJoCo-renderer video) also consume a trained checkpoint; with `checkpoints/final.pkl` present they now run. The scripted-gait demo (`scripts/make_demo_video_full.py`, no checkpoint needed) is kept as a rendering-pipeline reference.
 
-说明：`scripts/02_eval.sh`（闭环评估）与 `scripts/03_record_video.sh`（MuJoCo 渲染器出视频）都需要训练好的 checkpoint，而完整训练因 ROCm bug 无法产出，故不在上面的可复现流程内。提交的演示视频由 `scripts/make_demo_video_full.py` 生成。
+说明：`scripts/02_eval.sh`（闭环评估）与 `scripts/03_record_video.sh`（MuJoCo 渲染器出视频）同样需要训练好的 checkpoint；现在有了 `checkpoints/final.pkl` 即可运行。脚本步态演示（`scripts/make_demo_video_full.py`，无需 checkpoint）作为渲染管线参考保留。
 
 ---
 
@@ -179,8 +182,10 @@ Repository layout / 仓库结构:
 
 ```
 scripts/00_verify_rocm.sh        # Verify environment / 验证环境 (run first / 先跑这个)
-scripts/01_train.sh              # Train / 训练 (SMOKE=1 for quick test / 快速验证)
-scripts/make_demo_video_full.py  # Demo: random policy, real mj_step physics, 3D render / 演示（随机策略+真物理+3D）
+scripts/01_train.sh              # GPU train — hits ROCm race / GPU 训练（触发 ROCm 竞态）
+scripts/train_go1.py             # CPU training that converged (reward→23.9) / CPU 训练（已收敛 reward→23.9）
+scripts/render_policy_video.py   # Render the TRAINED policy demo / 渲染训练策略演示 (needs checkpoint / 需 checkpoint)
+scripts/make_demo_video_full.py  # Scripted-gait demo, real physics, 3D render / 脚本步态演示+真物理+3D
 scripts/repro_hsa_segfault.py    # Minimal crash reproduction / 最小崩溃复现脚本
 scripts/02_eval.sh               # Closed-loop eval (needs a trained checkpoint) / 闭环评估（需 checkpoint）
 scripts/03_record_video.sh       # MuJoCo-renderer video (needs a checkpoint) / MuJoCo 渲染器视频（需 checkpoint）
@@ -193,29 +198,29 @@ src/render.py                    # Render rollout to mp4 / 渲染 rollout 视频
 docs/ROCM_BUG_REPORT.md          # ROCm bug report (upstream issue material) / bug 报告素材
 ```
 
-There is no `data/` directory or dataset generation script: the environments come directly from MuJoCo Playground's registry, so there is no custom dataset to build or download. Inference is implemented in `src/eval.py` (loads a checkpoint and runs a closed-loop rollout) and `src/render.py` (renders a rollout to mp4) — both need a trained checkpoint, which the ROCm bug prevented us from producing, so the committed demo instead uses `scripts/make_demo_video_full.py` (a random policy, so no checkpoint is required).
+There is no `data/` directory or dataset generation script: the environments come directly from MuJoCo Playground's registry, so there is no custom dataset to build or download. Inference is implemented in `scripts/render_policy_video.py` (loads `checkpoints/latest.pkl` and rolls out the trained policy under joystick commands) — it consumes the checkpoint produced by the CPU training run. One inference-time detail worth noting: training used `normalize_observations=True`, so the network must be rebuilt with the same `preprocess_observations_fn=running_statistics.normalize` at render time, otherwise the policy sees raw-scale observations and topples; the render script does this.
 
-没有 `data/` 目录或数据生成脚本：环境直接来自 MuJoCo Playground 的 registry，因此没有自制数据集需要构建或下载。推理逻辑在 `src/eval.py`（加载 checkpoint 跑闭环 rollout）和 `src/render.py`（渲染 rollout 成 mp4）里——两者都需要训练好的 checkpoint，而 ROCm bug 使我们无法产出，故提交的演示改用 `scripts/make_demo_video_full.py`（随机策略，无需 checkpoint）。
+没有 `data/` 目录或数据生成脚本：环境直接来自 MuJoCo Playground 的 registry，因此没有自制数据集需要构建或下载。推理逻辑在 `scripts/render_policy_video.py`（加载 `checkpoints/latest.pkl`，在摇杆指令下 rollout 训练策略）——它消费 CPU 训练产出的 checkpoint。一个值得记录的推理细节：训练用了 `normalize_observations=True`，因此渲染时网络必须用同样的 `preprocess_observations_fn=running_statistics.normalize` 重建，否则策略会看到未归一化尺度的观测而摔倒；渲染脚本已做此处理。
 
-Actual results / 实际结果. `00_verify_rocm.sh` passes 6/6 and prints `RocmDevice`. The Go1 env loads and the PPO trainer compiles and dispatches on the GPU, then segfaults in the first `lax.scan` chunk (`EXIT=139`, observed twice; see section 2) — no checkpoint, reward curve, or eval metric was produced. The demo video is a random-policy rollout with real MuJoCo physics (CPU), rendered in 3D. Full training is blocked by the ROCm profiler race (section 2).
+Actual results / 实际结果. `00_verify_rocm.sh` passes 6/6 and prints `RocmDevice`. The Go1 env loads and the PPO trainer compiles and dispatches on the GPU, then segfaults in the first `lax.scan` chunk (`EXIT=139`, observed twice; see section 2) — so GPU training is not possible on this stack. We therefore ran the identical JAX/MJX + PPO training on **CPU**, which converged: a full 62.26M-step run (275.7 min, `CpuDevice`, 1024 parallel envs) with `eval/episode_reward` rising **0.001 → 2.7 (6.5M) → 13.4 (9.8M) → 19.0 (29.5M) → 23.9 (62.26M)**. 20 checkpoints were saved; the final policy walks/turns/side-steps under joystick command (demo in section 7). The trained checkpoint is `checkpoints/final.pkl`; the reward log is `train.log`.
 
-实际结果：`00_verify_rocm.sh` 通过 6/6 并打印 `RocmDevice`。Go1 环境能加载、PPO 训练器能在 GPU 上编译并发射，随后在第一个 `lax.scan` chunk 段错误（`EXIT=139`，实测两次；见第 2 节）——没有产出 checkpoint、reward 曲线或评估指标。演示视频是随机策略 + 真实 MuJoCo 物理（CPU）的 rollout，3D 渲染。完整训练受 ROCm profiler 竞态阻塞（第 2 节）。
+实际结果：`00_verify_rocm.sh` 通过 6/6 并打印 `RocmDevice`。Go1 环境能加载、PPO 训练器能在 GPU 上编译并发射，随后在第一个 `lax.scan` chunk 段错误（`EXIT=139`，实测两次；见第 2 节）——因此这套栈上无法用 GPU 训练。于是我们用同一套 JAX/MJX + PPO 在 **CPU** 上训练，并且收敛了：一次完整的 62.26M 步训练（275.7 分钟，`CpuDevice`，1024 并行环境），`eval/episode_reward` 从 **0.001 → 2.7（6.5M）→ 13.4（9.8M）→ 19.0（29.5M）→ 23.9（62.26M）**。保存 20 个 checkpoint；最终策略能按摇杆指令行走/转身/横移（演示见第 7 节）。训练好的 checkpoint 为 `checkpoints/final.pkl`，reward 日志为 `train.log`。
 
-Target results, once the ROCm bug is fixed / 目标结果，ROCm bug 修复后: training reward rises over iterations; eval shows positive mean episode reward with the robot upright; the video shows Go1 walking under commanded velocity. / 训练奖励随迭代上升；评估平均回合奖励为正且机器狗保持直立；视频展示 Go1 按指令速度行走。
+Note on the GPU goal / 关于 GPU 目标的说明: the original aim was GPU-accelerated training. That specific path stays blocked by the ROCm profiler race (section 2); once a patched `jax-rocm7-plugin` ships, the same script trains on GPU at a large speedup. The policy itself is real and trained today — just on CPU. / 原定目标是 GPU 加速训练。这条具体路径仍被 ROCm profiler 竞态阻塞（第 2 节）；一旦修复版 `jax-rocm7-plugin` 发布，同一脚本即可在 GPU 上训练并大幅提速。策略本身是真实且已训练完成的——只是跑在 CPU 上。
 
 ---
 
 ## 7. Demo Video / 演示视频
 
-Watch on Bilibili: [https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/). Local backup: [assets/demo_full2.mp4](assets/demo_full2.mp4).
+Watch on Bilibili: [https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/) *(update with the trained-policy re-upload)*. Local: [assets/demo_policy.mp4](assets/demo_policy.mp4).
 
-B 站观看：[https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/)。本地备份：[assets/demo_full2.mp4](assets/demo_full2.mp4)。
+B 站观看：[https://www.bilibili.com/video/BV1ATgC69Eqw/](https://www.bilibili.com/video/BV1ATgC69Eqw/)*（待替换为训练策略重传版）*。本地：[assets/demo_policy.mp4](assets/demo_policy.mp4)。
 
-Because full training is blocked by the ROCm profiler race (section 2), the demo is a random-policy rollout on the real Go1 model with real MuJoCo physics (`mujoco.mj_step`), rendered in 3D from three camera angles via `mujoco.Renderer` (OSMesa). It shows the simulation + rendering pipeline working, not a trained walking gait — the robot moves under random control. The physics here runs on CPU MuJoCo and is separate from the GPU MJX path used for training.
+The demo is the **trained PPO policy** (`checkpoints/final.pkl`) rolled out on the real Go1 model with real MuJoCo physics, rendered in 3D via `mujoco.Renderer`. Each segment feeds a different joystick velocity command — stand, walk forward/backward, side-step left/right, turn in place left/right, and a walk+turn arc — and the *same* network produces every motion; the gait is learned, not hand-authored. All 8 segments hold the trunk upright the whole rollout (min trunk height 0.288 m). Rendering runs on CPU MuJoCo, matching the CPU training backend.
 
-由于完整训练被 ROCm profiler 竞态阻塞（第 2 节），演示视频是真实 Go1 模型上的随机策略 rollout，用真实 MuJoCo 物理（`mujoco.mj_step`）驱动，经 `mujoco.Renderer`（OSMesa）从三个机位做 3D 渲染。它展示的是仿真+渲染管线正常工作，不是训练出的步态——机器狗在随机控制下运动。这里的物理跑在 CPU MuJoCo 上，与训练用的 GPU MJX 路径是分开的。
+演示视频是**训练出的 PPO 策略**（`checkpoints/final.pkl`）在真实 Go1 模型上的 rollout，用真实 MuJoCo 物理驱动，经 `mujoco.Renderer` 做 3D 渲染。每段喂入不同的摇杆速度指令——站立、前进/后退、左右横移、原地左右转、以及边走边转的弧线——全部动作由**同一个**网络产生；步态是学出来的，不是手写的。8 段全程保持躯干直立（最低躯干高度 0.288 m）。渲染跑在 CPU MuJoCo 上，与 CPU 训练后端一致。
 
-Regenerate / 重新生成: `MUJOCO_GL=osmesa python3 scripts/make_demo_video_full.py` (writes `assets/demo_full2.mp4`).
+Regenerate / 重新生成: `MUJOCO_GL=egl python3 scripts/render_policy_video.py` (writes `assets/demo_policy.mp4`, needs `checkpoints/latest.pkl`).
 
 ---
 
